@@ -1,0 +1,137 @@
+#########################################
+## OS specific files
+
+.DS_Store
+Thumbs.db
+
+#########################################
+## runtime files
+
+*.pid
+*.seed
+
+#########################################
+## log files
+
+.logs/
+.log/
+
+*.log
+
+#########################################
+## temporary files
+
+.temp/
+.tmp/
+
+.cache
+*.temp
+*.tmp
+*.bak
+*.swp
+*~
+
+#########################################
+## environment files
+
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+#########################################
+## IDE specific files
+
+# IntelliJ
+
+.idea/
+.idea_modules/
+
+*.iws
+*.iml
+*.ipr
+
+# VS Code
+
+.vscode/
+
+# Eclipse
+
+.settings/
+
+.classpath
+.history
+.loadpath
+.metadata
+.project
+.worksheet
+
+#########################################
+## build tool metadata
+
+# generic output
+
+bin/
+dist/
+build/
+out/
+
+# Maven, Gradle, sbt
+
+.lib/
+.bsp/
+.gradle/
+.target/
+target/
+project/boot/
+project/project/
+project/target/
+
+# Python
+
+.pytest_cache/
+*.egg-info/
+
+# Node.js, NPM
+
+.node_modules/
+node_modules/
+
+# PlatformIO
+
+.pio/
+
+#########################################
+## technology specific runtime files
+
+# JVM
+
+hs_err_pid*
+replay_pid*
+
+# Python
+
+__pycache__/
+.venv/
+
+#########################################
+## binaries & packaged artifacts
+
+*.7z
+*.bin
+*.bz2
+*.class
+*.ear
+*.gz
+*.iso
+*.jar
+*.nar
+*.py[cod]
+*.rar
+*.sar
+*.tar
+*.tgz
+*.war
+*.zip
+
+#########################################
