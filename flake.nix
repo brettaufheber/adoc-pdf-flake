@@ -4,6 +4,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    nixpkgs-asciidoctor.url = "github:NixOS/nixpkgs/nixos-25.05";
     kroki-src = {
       url = "github:asciidoctor/asciidoctor-kroki/92954d097896069974bb2becda2402a6b8fad3dd";
       flake = false;
@@ -13,12 +14,14 @@
   outputs = {
     nixpkgs,
     flake-utils,
+    nixpkgs-asciidoctor,
     kroki-src,
     ...
   }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        asciidoctorPkgs = nixpkgs-asciidoctor.legacyPackages.${system};
 
         fontPackages = with pkgs; [
           bakoma_ttf
@@ -49,7 +52,7 @@
 
           adocPdf = {
             packages = [
-              (pkgs.asciidoctor-with-extensions.override {
+              (asciidoctorPkgs.asciidoctor-with-extensions.override {
                 withJava = false;
               })
               pkgs.fontconfig
