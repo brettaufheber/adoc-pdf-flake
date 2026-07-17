@@ -21,6 +21,7 @@ function generate_pdf {
   local INPUT_FILE
   local OUTPUT_FILE
   local TEMP_IMG_OUTPUT_DIR
+  local STATIC_IMAGES_DIR
 
   INPUT_FILE="${1}"
   OUTPUT_FILE="${INPUT_FILE%.adoc}.pdf"
@@ -28,6 +29,12 @@ function generate_pdf {
   shift
 
   echo "Generate file: ${OUTPUT_FILE}"
+
+  # workaround for Kroki image generation
+  STATIC_IMAGES_DIR="${ASCIIDOCTOR_IMAGES_DIR:-${PWD}/images}"
+  if [[ -d "${STATIC_IMAGES_DIR}" ]]; then
+    cp -a -- "${STATIC_IMAGES_DIR}/." "${TEMP_IMG_OUTPUT_DIR}/"
+  fi
 
   asciidoctor-pdf \
     "--failure-level=${ASCIIDOCTOR_FAILURE_LEVEL:-WARN}" \
@@ -37,6 +44,7 @@ function generate_pdf {
     -a "allow-uri-read" \
     -a "compress" \
     -a "imagesoutdir=${TEMP_IMG_OUTPUT_DIR}" \
+    -a "imagesdir=${TEMP_IMG_OUTPUT_DIR}" \
     -a "pdf-themesdir=${ASCIIDOCTOR_PDF_THEMESDIR:-${PWD}/themes}" \
     -a "pdf-theme=${ASCIIDOCTOR_PDF_THEME:-custom}" \
     -a "mathematical-format=png" \
