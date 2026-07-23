@@ -12,7 +12,7 @@ function main {
   APP_NAME="${0##*/}"
   FAILURE_LEVEL="WARN"
   SAFE_MODE="unsafe"
-  USE_EXTENSION_BIBTEX=1
+  USE_EXTENSION_BIBTEX=0
   USE_EXTENSION_MATHEMATICAL=1
   USE_EXTENSION_KROKI=1
   COLLECT_IMAGES=1
@@ -34,7 +34,7 @@ function main {
           'images-dir:,' \
           'themes-dir:,' \
           'attribute:,' \
-          'no-bibtex,' \
+          'with-bibtex,' \
           'no-mathematical,' \
           'no-kroki,' \
           'no-image-collection,' \
@@ -69,8 +69,8 @@ function main {
         USER_ATTRIBUTES+=(-a "${2}")
         shift 2
         ;;
-      --no-bibtex)
-        USE_EXTENSION_BIBTEX=0
+      --with-bibtex)
+        USE_EXTENSION_BIBTEX=1
         shift
         ;;
       --no-mathematical)
