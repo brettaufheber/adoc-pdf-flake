@@ -211,7 +211,7 @@ function generate_pdf {
     "${INPUT_FILE}"
 }
 
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329  # Called indirectly via: trap cleanup EXIT
 function cleanup {
   local EXIT_STATUS=$?
 
