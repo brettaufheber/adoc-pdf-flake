@@ -32,9 +32,11 @@
             packages = with pkgs; [
               coreutils
               findutils
+              util-linux
               tzdata
               cacert
               bash
+              shellcheck
             ];
             env = {
               SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
