@@ -4,8 +4,12 @@ set -euo pipefail
 function main {
   local OPTS
   local INPUT_PATH
+  local INPUT_ROOT
   local RELATIVE_INPUT_PATH
   local ADOC_FILE
+  local ADOC_DIR
+  local ADOC_LIST
+  local TEMP_GENERATED_ROOT
   local -a GEN_ARGS
   local -a USER_ATTRIBUTES
 
@@ -114,12 +118,25 @@ function main {
   TEMP_DIR="$(mktemp -d -t asciidoctor-assets.XXXXXXXX)"
   trap cleanup EXIT
 
+  TEMP_GENERATED_ROOT="${TEMP_DIR}/generated"
+  ADOC_LIST="${TEMP_DIR}/adoc-files"
+
+  mkdir -p -- "${TEMP_GENERATED_ROOT}"
+
   INPUT_PATH="${1:-${PWD}}"
 
   [[ -e "${INPUT_PATH}" ]] ||
     die "input path does not exist: ${INPUT_PATH}"
 
   INPUT_PATH="$(realpath -- "${INPUT_PATH}")"
+
+  if [[ -d "${INPUT_PATH}" ]]; then
+    INPUT_ROOT="${INPUT_PATH}"
+  elif [[ -f "${INPUT_PATH}" && "${INPUT_PATH}" == *.adoc ]]; then
+    INPUT_ROOT="$(dirname -- "${INPUT_PATH}")"
+  else
+    die "input path must be a directory or an .adoc file: ${INPUT_PATH}"
+  fi
 
   if (( USE_EXTENSION_BIBTEX )); then
     GEN_ARGS+=(
@@ -150,21 +167,30 @@ function main {
     -a "source-highlighter@=rouge"
   )
 
-  find "${INPUT_PATH}" \
-    \( -type d -path '*/.*' -prune \) -o \
-    \( -type f -name '*.adoc' ! -path '*/.*' -print0 \) |
-      while IFS= read -r -d "" ADOC_FILE; do
-        RELATIVE_INPUT_PATH="$(
-          realpath \
-            --relative-to="${INPUT_PATH}" \
-            -- "$(dirname -- "${ADOC_FILE}")"
-        )"
-        generate_pdf \
-          "${TEMP_DIR}/${RELATIVE_INPUT_PATH}" \
-          "${ADOC_FILE}" \
-          "${GEN_ARGS[@]}" \
-          "${USER_ATTRIBUTES[@]}"
-      done
+  if [[ -d "${INPUT_PATH}" ]]; then
+    find "${INPUT_PATH}" \
+      \( -type d -path '*/.*' -prune \) -o \
+      \( -type f -name '*.adoc' ! -path '*/.*' -print0 \) \
+      > "${ADOC_LIST}"
+  else
+    printf '%s\0' "${INPUT_PATH}" > "${ADOC_LIST}"
+  fi
+
+  while IFS= read -r -d '' ADOC_FILE; do
+    ADOC_DIR="$(dirname -- "${ADOC_FILE}")"
+
+    RELATIVE_INPUT_PATH="$(
+      realpath \
+        --relative-to="${INPUT_ROOT}" \
+        -- "${ADOC_DIR}"
+    )"
+
+    generate_pdf \
+      "${TEMP_GENERATED_ROOT}/${RELATIVE_INPUT_PATH}" \
+      "${ADOC_FILE}" \
+      "${GEN_ARGS[@]}" \
+      "${USER_ATTRIBUTES[@]}"
+  done < "${ADOC_LIST}"
 }
 
 function generate_pdf {
