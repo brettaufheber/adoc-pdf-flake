@@ -42,7 +42,7 @@ function main {
           'keep-temp,' \
           'help'
       )" \
-      -- "$@"
+      -- "${@}"
   )"
 
   eval set -- "${OPTS}"
@@ -179,15 +179,15 @@ function generate_pdf {
   ATTRIBUTES=()
   shift 2
 
-  echo "Generate file: ${OUTPUT_FILE}"
+  printf 'Generate file: %s\n' "${OUTPUT_FILE}"
 
   mkdir -p -- "${TEMP_GEN_DIR}"
 
   if (( COLLECT_IMAGES )) && [[ -d "${IMAGES_DIR}" ]]; then
     ATTRIBUTES+=(
-      -a "imagesoutdir@=${TEMP_GEN_DIR}" \
-      -a "imagesdir@=${TEMP_GEN_DIR}" \
-      )
+      -a "imagesoutdir@=${TEMP_GEN_DIR}"
+      -a "imagesdir@=${TEMP_GEN_DIR}"
+    )
     cp -a -- "${IMAGES_DIR}/." "${TEMP_GEN_DIR}/"
   fi
 
@@ -195,6 +195,7 @@ function generate_pdf {
     ATTRIBUTES+=(
       -a "pdf-themesdir@=${PDF_THEMES_DIR}"
     )
+
     if [[ -r "${PDF_THEMES_DIR}/default-theme.yml" ]]; then
       ATTRIBUTES+=(
         -a "pdf-theme@=default"
@@ -211,9 +212,10 @@ function generate_pdf {
     "${INPUT_FILE}"
 }
 
-# shellcheck disable=SC2317,SC2329  # Called indirectly via: trap cleanup EXIT
+# shellcheck disable=SC2317,SC2329
+# Called indirectly via: trap cleanup EXIT
 function cleanup {
-  local EXIT_STATUS=$?
+  local EXIT_STATUS="${?}"
 
   trap - EXIT
 
@@ -230,7 +232,7 @@ function cleanup {
 
 function die {
   printf '%s - Error: %s\n' "${APP_NAME}" "$*" >&2
-  printf 'Try %s --help" for usage.\n' "${APP_NAME}" >&2
+  printf 'Try "%s --help" for usage.\n' "${APP_NAME}" >&2
   exit 1
 }
 
@@ -258,8 +260,8 @@ Options:
   -a, --attribute ATTRIBUTE
       Pass an attribute to asciidoctor-pdf. Repeatable.
 
-      --no-bibtex
-      Do not load asciidoctor-bibtex.
+      --with-bibtex
+      Load asciidoctor-bibtex.
 
       --no-mathematical
       Do not load asciidoctor-mathematical.
