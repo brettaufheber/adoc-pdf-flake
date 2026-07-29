@@ -33,6 +33,7 @@
               coreutils
               findutils
               util-linux
+              watchexec
               tzdata
               cacert
               bash

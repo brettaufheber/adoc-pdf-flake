@@ -214,7 +214,7 @@ function generate_pdf {
       -a "imagesoutdir@=${TEMP_GEN_DIR}"
       -a "imagesdir@=${TEMP_GEN_DIR}"
     )
-    cp -a -- "${IMAGES_DIR}/." "${TEMP_GEN_DIR}/"
+    cp -R -- "${IMAGES_DIR}/." "${TEMP_GEN_DIR}/"
   fi
 
   if (( DISCOVER_THEME )) && [[ -d "${PDF_THEMES_DIR}" ]]; then
