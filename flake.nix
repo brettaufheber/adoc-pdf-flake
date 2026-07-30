@@ -64,7 +64,6 @@
             # Coherent serif, sans and monospace families
             ibm-plex
             # Source code and technical listings
-            source-code-pro
             jetbrains-mono
             fira-code
           ]

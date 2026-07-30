@@ -39,7 +39,10 @@ function main {
           'themes-dir:,' \
           'attribute:,' \
           'with-bibtex,' \
+          'no-bibtex,' \
           'with-kroki,' \
+          'no-kroki,' \
+          'with-mathematical,' \
           'no-mathematical,' \
           'no-image-collection,' \
           'no-theme-discovery,' \
@@ -77,8 +80,20 @@ function main {
         USE_EXTENSION_BIBTEX=1
         shift
         ;;
+      --no-bibtex)
+        USE_EXTENSION_BIBTEX=0
+        shift
+        ;;
       --with-kroki)
         USE_EXTENSION_KROKI=1
+        shift
+        ;;
+      --no-kroki)
+        USE_EXTENSION_KROKI=0
+        shift
+        ;;
+      --with-mathematical)
+        USE_EXTENSION_MATHEMATICAL=1
         shift
         ;;
       --no-mathematical)
