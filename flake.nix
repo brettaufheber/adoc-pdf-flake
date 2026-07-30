@@ -1,31 +1,94 @@
 {
-  description = "Asciidoctor PDF generation tooling";
+  description = "Reproducible Asciidoctor PDF generation tooling";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    nixpkgs-asciidoctor.url = "github:NixOS/nixpkgs/nixos-25.05";
-    kroki-src = {
-      url = "github:asciidoctor/asciidoctor-kroki/92954d097896069974bb2becda2402a6b8fad3dd";
-      flake = false;
-    };
   };
 
   outputs = {
     nixpkgs,
     flake-utils,
-    nixpkgs-asciidoctor,
-    kroki-src,
     ...
   }:
-    flake-utils.lib.eachDefaultSystem (system:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        asciidoctorPkgs = nixpkgs-asciidoctor.legacyPackages.${system};
+        lib = pkgs.lib;
+
+        readShellApplicationBody =
+          path:
+          let
+            isLeadingMetadataLine =
+              line:
+              builtins.match "^[[:space:]]*$" line != null
+              || builtins.match "^[[:space:]]*#.*$" line != null
+              || builtins.match "^[[:space:]]*set([[:space:]].*)?$" line != null;
+
+            dropWhile =
+              predicate: list:
+              if list == [ ] then
+                [ ]
+              else if predicate (builtins.head list) then
+                dropWhile predicate (builtins.tail list)
+              else
+                list;
+          in
+          /*
+            writeShellApplication already adds a shebang and strict mode.
+            Remove those leading lines from the original script.
+          */
+          lib.concatStringsSep "\n" (
+            dropWhile isLeadingMetadataLine (
+              lib.splitString "\n" (
+                builtins.readFile path
+              )
+            )
+          );
 
         fontPackages = with pkgs; [
+          # Computer Modern and traditional TeX fonts
           bakoma_ttf
+          cm_unicode
+          lmodern
+          tex-gyre
+          # Scientific text and mathematical symbols
+          libertinus
+          stix-two
+          # Broad Unicode coverage
+          noto-fonts
+          noto-fonts-color-emoji
+          noto-fonts-cjk-sans
+          noto-fonts-cjk-serif
+          # Common document and browser fonts
+          dejavu_fonts
+          liberation_ttf
+          roboto
+          inter
+          # Coherent serif, sans and monospace families
+          ibm-plex
+          # Source code
+          source-code-pro
+          fira-code
         ];
+
+        /*
+          Asciidoctor PDF does not resolve a font family through Fontconfig.
+          Fonts used in a PDF theme must be declared by filename in the
+          font catalog.
+        */
+        pdfFontDirectory = pkgs.runCommand "asciidoctor-pdf-fonts" {
+          nativeBuildInputs = with pkgs; [
+            coreutils
+            findutils
+          ];
+        } ''
+          ${pkgs.bash}/bin/bash \
+            ${./scripts/create-font-directory.sh} \
+            "$out" \
+            ${lib.escapeShellArgs (map toString fontPackages)}
+        '';
 
         features = {
           default = {
@@ -34,10 +97,10 @@
               findutils
               util-linux
               watchexec
-              tzdata
               cacert
               bash
-              shellcheck
+              man
+              man-db
             ];
             env = {
               SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
@@ -53,63 +116,100 @@
             '';
           };
 
-          adocPdf = {
-            packages = [
-              (asciidoctorPkgs.asciidoctor-with-extensions.override {
-                withJava = false;
-              })
-              pkgs.fontconfig
+          build = {
+            packages = with pkgs; [
+              bundix
+              bundler
+              git
+              ruby
+              shellcheck
+            ];
+            env = {
+              BUNDLE_FORCE_RUBY_PLATFORM = "true";
+            };
+          };
+
+          tools = {
+            packages = with pkgs; [
+              fontconfig
+              graphicsmagick
             ] ++ fontPackages;
             env = {
               FONTCONFIG_FILE = pkgs.makeFontsConf { fontDirectories = fontPackages; };
-              RUBYLIB = "${kroki-src.outPath}/ruby/lib";  # make Kroki available
-              RUBYOPT = "-W0";  # suppress warnings
+              ASCIIDOCTOR_PDF_FONTS_DIR = "${pdfFontDirectory}";
+              RUBYOPT = "-W0";  # suppress Ruby deprecation noise, not Asciidoctor log messages
             };
           };
         };
 
-        adocPdfApp =
+        asciidoctorToolchain = pkgs.callPackage ./nix/asciidoctor-toolchain.nix { };
+
+        adocPdfApp = pkgs.writeShellApplication {
+          name = "adoc-pdf";
+          runtimeInputs = features.default.packages ++ features.tools.packages++ [
+            asciidoctorToolchain
+          ];
+          runtimeEnv = features.default.env // features.tools.env;
+          inheritPath = false;
+          text = readShellApplicationBody ./scripts/adoc-pdf.sh;
+        };
+
+        updateGemsApp = pkgs.writeShellApplication {
+          name = "update-gems";
+          runtimeInputs = features.default.packages ++ features.build.packages;
+          runtimeEnv = features.default.env // features.build.env;
+          inheritPath = false;
+          text = readShellApplicationBody ./scripts/update-gems.sh;
+        };
+      in
+      {
+        packages =
           let
-            scriptSource = builtins.readFile ./scripts/adoc-pdf.sh;
-
-            isLeadingMetadataLine = line:
-              builtins.match "^[[:space:]]*$" line != null
-              || builtins.match "^[[:space:]]*#.*$" line != null
-              || builtins.match "^[[:space:]]*set([[:space:]].*)?$" line != null;
-
-            dropWhile = predicate: list:
-              if list == [ ] then
-                [ ]
-              else if predicate (builtins.head list) then
-                dropWhile predicate (builtins.tail list)
-              else
-                list;
-
-            scriptBody =
-              pkgs.lib.concatStringsSep "\n" (
-                dropWhile isLeadingMetadataLine (
-                  pkgs.lib.splitString "\n" scriptSource
-                )
-              );
+            individualPackages = {
+              adoc-pdf = adocPdfApp;
+              asciidoctor-toolchain = asciidoctorToolchain;
+              fonts = pdfFontDirectory;
+              update-gems = updateGemsApp;
+            };
           in
-          pkgs.writeShellApplication {
-            name = "adoc-pdf";
-            runtimeInputs = features.default.packages ++ features.adocPdf.packages;
-            runtimeEnv = features.default.env // features.adocPdf.env;
-
-            text = scriptBody;
+          individualPackages // {
+            default = pkgs.linkFarm "all" (
+              lib.mapAttrsToList (
+                name: path: {
+                  inherit name path;
+                }
+              ) individualPackages
+            );
           };
-    in
-    {
-      packages.default = adocPdfApp;
-      apps.default = flake-utils.lib.mkApp { drv = adocPdfApp; };
 
-      devShells.default = pkgs.mkShell (
-        features.default.env // features.adocPdf.env // {
-          packages = features.default.packages ++ features.adocPdf.packages;
-          shellHook = features.default.shellHook;
-        }
-      );
-    }
-  );
+        apps = {
+          default = flake-utils.lib.mkApp { drv = adocPdfApp; };
+          adoc-pdf = flake-utils.lib.mkApp { drv = adocPdfApp; };
+          update-gems = flake-utils.lib.mkApp { drv = updateGemsApp; };
+        };
+
+        devShells = {
+          default = pkgs.mkShell (
+            features.default.env // features.tools.env // {
+              packages = features.default.packages ++ features.tools.packages ++ [
+                adocPdfApp
+                asciidoctorToolchain
+              ];
+              shellHook = features.default.shellHook;
+            }
+          );
+
+          build = pkgs.mkShell (
+            features.default.env // features.build.env // {
+              packages = features.default.packages ++ features.build.packages ++ [
+                updateGemsApp
+               ];
+              shellHook = features.default.shellHook;
+            }
+          );
+        };
+
+        formatter = pkgs.alejandra;
+      }
+    );
 }

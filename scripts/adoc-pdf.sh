@@ -18,7 +18,7 @@ function main {
   SAFE_MODE="unsafe"
   USE_EXTENSION_BIBTEX=0
   USE_EXTENSION_MATHEMATICAL=1
-  USE_EXTENSION_KROKI=1
+  USE_EXTENSION_KROKI=0
   COLLECT_IMAGES=1
   DISCOVER_THEME=1
   REMOVE_TEMP_DIR=1
@@ -39,8 +39,8 @@ function main {
           'themes-dir:,' \
           'attribute:,' \
           'with-bibtex,' \
+          'with-kroki,' \
           'no-mathematical,' \
-          'no-kroki,' \
           'no-image-collection,' \
           'no-theme-discovery,' \
           'keep-temp,' \
@@ -77,12 +77,12 @@ function main {
         USE_EXTENSION_BIBTEX=1
         shift
         ;;
-      --no-mathematical)
-        USE_EXTENSION_MATHEMATICAL=0
+      --with-kroki)
+        USE_EXTENSION_KROKI=1
         shift
         ;;
-      --no-kroki)
-        USE_EXTENSION_KROKI=0
+      --no-mathematical)
+        USE_EXTENSION_MATHEMATICAL=0
         shift
         ;;
       --no-image-collection)
@@ -158,6 +158,12 @@ function main {
       -a "kroki-fetch-diagram@"
       -a "kroki-server-url@=https://kroki.io"
       -a "kroki-http-method@=adaptive"
+    )
+  fi
+
+  if [[ -n "${ASCIIDOCTOR_PDF_FONTS_DIR:-}" ]]; then
+    GEN_ARGS+=(
+      -a "pdf-fontsdir@=${ASCIIDOCTOR_PDF_FONTS_DIR};GEM_FONTS_DIR"
     )
   fi
 
