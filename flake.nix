@@ -46,7 +46,6 @@
           bakoma_ttf
           cm_unicode
           lmodern
-          tex-gyre
           # Scientific text and mathematical symbols
           libertinus
           stix-two
@@ -66,7 +65,7 @@
           source-code-pro
           fira-code
         ]
-        ++ lib.attrValues tex-gyre;
+        ++ lib.attrValues pkgs.tex-gyre;
 
         /*
         Asciidoctor PDF does not resolve a font family through Fontconfig.
