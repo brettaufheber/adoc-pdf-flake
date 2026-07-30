@@ -65,7 +65,8 @@
           # Source code
           source-code-pro
           fira-code
-        ];
+        ]
+        ++ lib.attrValues tex-gyre;
 
         /*
         Asciidoctor PDF does not resolve a font family through Fontconfig.
