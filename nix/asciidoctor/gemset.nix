@@ -171,6 +171,16 @@
     };
     version = "6.2.0";
   };
+  bigdecimal = {
+    groups = ["default"];
+    platforms = [];
+    source = {
+      remotes = ["https://rubygems.org"];
+      sha256 = "1k6qzammv9r6b2cw3siasaik18i6wjc5m0gw5nfdc6jj64h79z1g";
+      type = "gem";
+    };
+    version = "3.1.9";
+  };
   citeproc = {
     dependencies = ["date" "forwardable" "json" "namae" "observer" "open-uri"];
     groups = ["default"];

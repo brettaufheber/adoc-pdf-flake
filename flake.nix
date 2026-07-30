@@ -63,8 +63,9 @@
             inter
             # Coherent serif, sans and monospace families
             ibm-plex
-            # Source code
+            # Source code and technical listings
             source-code-pro
+            jetbrains-mono
             fira-code
           ]
           ++ lib.attrValues pkgs.tex-gyre;
