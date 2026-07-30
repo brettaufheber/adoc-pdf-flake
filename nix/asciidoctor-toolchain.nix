@@ -1,9 +1,7 @@
 {
   bundlerApp,
 }:
-  bundlerApp {
-    pname = "asciidoctor";
-    gemdir = ./asciidoctor;
+  let
     exes = [
       "asciidoctor"
       "asciidoctor-pdf"
@@ -12,6 +10,12 @@
       "asciidoctor-reducer"
       "asciidoctor-revealjs"
     ];
+  in
+  bundlerApp {
+    pname = "asciidoctor";
+    gemdir = ./asciidoctor;
+    inherit exes;
+    passthru = { inherit exes; };
     meta = {
       description = "Reproducible Asciidoctor converter toolchain";
       mainProgram = "asciidoctor";

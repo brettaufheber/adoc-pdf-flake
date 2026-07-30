@@ -91,7 +91,7 @@
         '';
 
         features = {
-          default = {
+          common = {
             packages = with pkgs; [
               coreutils
               findutils
@@ -99,8 +99,6 @@
               watchexec
               cacert
               bash
-              man
-              man-db
             ];
             env = {
               SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
@@ -116,29 +114,36 @@
             '';
           };
 
+          tools = {
+            packages = with pkgs; [
+              fontconfig
+              graphicsmagick
+            ];
+            env = {
+              FONTCONFIG_FILE = pkgs.makeFontsConf { fontDirectories = fontPackages; };
+              ASCIIDOCTOR_PDF_FONTS_DIR = "${pdfFontDirectory}";
+              RUBYOPT = "-W0";  # suppress Ruby deprecation noise, not Asciidoctor log messages
+            };
+          };
+
           build = {
             packages = with pkgs; [
               bundix
               bundler
               git
               ruby
-              shellcheck
             ];
             env = {
               BUNDLE_FORCE_RUBY_PLATFORM = "true";
             };
           };
 
-          tools = {
+          development = {
             packages = with pkgs; [
-              fontconfig
-              graphicsmagick
-            ] ++ fontPackages;
-            env = {
-              FONTCONFIG_FILE = pkgs.makeFontsConf { fontDirectories = fontPackages; };
-              ASCIIDOCTOR_PDF_FONTS_DIR = "${pdfFontDirectory}";
-              RUBYOPT = "-W0";  # suppress Ruby deprecation noise, not Asciidoctor log messages
-            };
+              man-db
+              shellcheck
+            ];
+            env = { };
           };
         };
 
@@ -146,21 +151,22 @@
 
         adocPdfApp = pkgs.writeShellApplication {
           name = "adoc-pdf";
-          runtimeInputs = features.default.packages ++ features.tools.packages++ [
+          runtimeInputs = features.common.packages ++ features.tools.packages ++ [
             asciidoctorToolchain
           ];
-          runtimeEnv = features.default.env // features.tools.env;
+          runtimeEnv = features.common.env // features.tools.env;
           inheritPath = false;
           text = readShellApplicationBody ./scripts/adoc-pdf.sh;
         };
 
         updateGemsApp = pkgs.writeShellApplication {
           name = "update-gems";
-          runtimeInputs = features.default.packages ++ features.build.packages;
-          runtimeEnv = features.default.env // features.build.env;
+          runtimeInputs = features.common.packages ++ features.build.packages;
+          runtimeEnv = features.common.env // features.build.env;
           inheritPath = false;
           text = readShellApplicationBody ./scripts/update-gems.sh;
         };
+
       in
       {
         packages =
@@ -182,29 +188,40 @@
             );
           };
 
-        apps = {
-          default = flake-utils.lib.mkApp { drv = adocPdfApp; };
-          adoc-pdf = flake-utils.lib.mkApp { drv = adocPdfApp; };
-          update-gems = flake-utils.lib.mkApp { drv = updateGemsApp; };
-        };
+        apps =
+          lib.genAttrs
+            asciidoctorToolchain.exes
+            (
+              exe:
+              flake-utils.lib.mkApp {
+                drv = asciidoctorToolchain;
+                name = exe;
+              }
+            )
+          //
+            {
+              default = flake-utils.lib.mkApp { drv = adocPdfApp; };
+              adoc-pdf = flake-utils.lib.mkApp { drv = adocPdfApp; };
+              update-gems = flake-utils.lib.mkApp { drv = updateGemsApp; };
+            };
 
         devShells = {
           default = pkgs.mkShell (
-            features.default.env // features.tools.env // {
-              packages = features.default.packages ++ features.tools.packages ++ [
+            features.common.env // features.tools.env // features.development.env // {
+              packages = features.common.packages ++ features.tools.packages ++ features.development.packages ++ [
                 adocPdfApp
                 asciidoctorToolchain
               ];
-              shellHook = features.default.shellHook;
+              shellHook = features.common.shellHook;
             }
           );
 
           build = pkgs.mkShell (
-            features.default.env // features.build.env // {
-              packages = features.default.packages ++ features.build.packages ++ [
+            features.common.env // features.build.env // features.development.env // {
+              packages = features.common.packages ++ features.build.packages ++ features.development.packages ++ [
                 updateGemsApp
                ];
-              shellHook = features.default.shellHook;
+              shellHook = features.common.shellHook;
             }
           );
         };
