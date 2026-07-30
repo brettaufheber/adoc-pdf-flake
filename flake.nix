@@ -12,32 +12,26 @@
     ...
   }:
     flake-utils.lib.eachDefaultSystem (
-      system:
-      let
+      system: let
         pkgs = nixpkgs.legacyPackages.${system};
         lib = pkgs.lib;
 
-        readShellApplicationBody =
-          path:
-          let
-            isLeadingMetadataLine =
-              line:
-              builtins.match "^[[:space:]]*$" line != null
-              || builtins.match "^[[:space:]]*#.*$" line != null
-              || builtins.match "^[[:space:]]*set([[:space:]].*)?$" line != null;
+        readShellApplicationBody = path: let
+          isLeadingMetadataLine = line:
+            builtins.match "^[[:space:]]*$" line != null
+            || builtins.match "^[[:space:]]*#.*$" line != null
+            || builtins.match "^[[:space:]]*set([[:space:]].*)?$" line != null;
 
-            dropWhile =
-              predicate: list:
-              if list == [ ] then
-                [ ]
-              else if predicate (builtins.head list) then
-                dropWhile predicate (builtins.tail list)
-              else
-                list;
-          in
+          dropWhile = predicate: list:
+            if list == []
+            then []
+            else if predicate (builtins.head list)
+            then dropWhile predicate (builtins.tail list)
+            else list;
+        in
           /*
-            writeShellApplication already adds a shebang and strict mode.
-            Remove those leading lines from the original script.
+          writeShellApplication already adds a shebang and strict mode.
+          Remove those leading lines from the original script.
           */
           lib.concatStringsSep "\n" (
             dropWhile isLeadingMetadataLine (
@@ -74,21 +68,22 @@
         ];
 
         /*
-          Asciidoctor PDF does not resolve a font family through Fontconfig.
-          Fonts used in a PDF theme must be declared by filename in the
-          font catalog.
+        Asciidoctor PDF does not resolve a font family through Fontconfig.
+        Fonts used in a PDF theme must be declared by filename in the
+        font catalog.
         */
-        pdfFontDirectory = pkgs.runCommand "asciidoctor-pdf-fonts" {
-          nativeBuildInputs = with pkgs; [
-            coreutils
-            findutils
-          ];
-        } ''
-          ${pkgs.bash}/bin/bash \
-            ${./scripts/create-font-directory.sh} \
-            "$out" \
-            ${lib.escapeShellArgs (map toString fontPackages)}
-        '';
+        pdfFontDirectory =
+          pkgs.runCommand "asciidoctor-pdf-fonts" {
+            nativeBuildInputs = with pkgs; [
+              coreutils
+              findutils
+            ];
+          } ''
+            ${pkgs.bash}/bin/bash \
+              ${./scripts/create-font-directory.sh} \
+              "$out" \
+              ${lib.escapeShellArgs (map toString fontPackages)}
+          '';
 
         features = {
           common = {
@@ -120,9 +115,9 @@
               graphicsmagick
             ];
             env = {
-              FONTCONFIG_FILE = pkgs.makeFontsConf { fontDirectories = fontPackages; };
+              FONTCONFIG_FILE = pkgs.makeFontsConf {fontDirectories = fontPackages;};
               ASCIIDOCTOR_PDF_FONTS_DIR = "${pdfFontDirectory}";
-              RUBYOPT = "-W0";  # suppress Ruby deprecation noise, not Asciidoctor log messages
+              RUBYOPT = "-W0"; # suppress Ruby deprecation noise, not Asciidoctor log messages
             };
           };
 
@@ -143,17 +138,20 @@
               man-db
               shellcheck
             ];
-            env = { };
+            env = {};
           };
         };
 
-        asciidoctorToolchain = pkgs.callPackage ./nix/asciidoctor-toolchain.nix { };
+        asciidoctorToolchain = pkgs.callPackage ./nix/asciidoctor-toolchain.nix {};
 
         adocPdfApp = pkgs.writeShellApplication {
           name = "adoc-pdf";
-          runtimeInputs = features.common.packages ++ features.tools.packages ++ [
-            asciidoctorToolchain
-          ];
+          runtimeInputs =
+            features.common.packages
+            ++ features.tools.packages
+            ++ [
+              asciidoctorToolchain
+            ];
           runtimeEnv = features.common.env // features.tools.env;
           inheritPath = false;
           text = readShellApplicationBody ./scripts/adoc-pdf.sh;
@@ -161,66 +159,80 @@
 
         updateGemsApp = pkgs.writeShellApplication {
           name = "update-gems";
-          runtimeInputs = features.common.packages ++ features.build.packages;
+          runtimeInputs =
+            features.common.packages
+            ++ features.build.packages;
           runtimeEnv = features.common.env // features.build.env;
           inheritPath = false;
           text = readShellApplicationBody ./scripts/update-gems.sh;
         };
-
-      in
-      {
-        packages =
-          let
-            individualPackages = {
-              adoc-pdf = adocPdfApp;
-              asciidoctor-toolchain = asciidoctorToolchain;
-              fonts = pdfFontDirectory;
-              update-gems = updateGemsApp;
-            };
-          in
-          individualPackages // {
+      in {
+        packages = let
+          individualPackages = {
+            adoc-pdf = adocPdfApp;
+            asciidoctor-toolchain = asciidoctorToolchain;
+            fonts = pdfFontDirectory;
+            update-gems = updateGemsApp;
+          };
+        in
+          individualPackages
+          // {
             default = pkgs.linkFarm "all" (
               lib.mapAttrsToList (
                 name: path: {
                   inherit name path;
                 }
-              ) individualPackages
+              )
+              individualPackages
             );
           };
 
         apps =
           lib.genAttrs
-            asciidoctorToolchain.exes
-            (
-              exe:
+          asciidoctorToolchain.exes
+          (
+            exe:
               flake-utils.lib.mkApp {
                 drv = asciidoctorToolchain;
                 name = exe;
               }
-            )
-          //
-            {
-              default = flake-utils.lib.mkApp { drv = adocPdfApp; };
-              adoc-pdf = flake-utils.lib.mkApp { drv = adocPdfApp; };
-              update-gems = flake-utils.lib.mkApp { drv = updateGemsApp; };
-            };
+          )
+          // {
+            default = flake-utils.lib.mkApp {drv = adocPdfApp;};
+            adoc-pdf = flake-utils.lib.mkApp {drv = adocPdfApp;};
+            update-gems = flake-utils.lib.mkApp {drv = updateGemsApp;};
+          };
 
         devShells = {
           default = pkgs.mkShell (
-            features.common.env // features.tools.env // features.development.env // {
-              packages = features.common.packages ++ features.tools.packages ++ features.development.packages ++ [
-                adocPdfApp
-                asciidoctorToolchain
-              ];
+            features.common.env
+            // features.tools.env
+            // features.development.env
+            // {
+              packages =
+                features.common.packages
+                ++ features.tools.packages
+                ++ features.development.packages
+                ++ [
+                  adocPdfApp
+                  asciidoctorToolchain
+                ];
               shellHook = features.common.shellHook;
             }
           );
 
           build = pkgs.mkShell (
-            features.common.env // features.build.env // features.development.env // {
-              packages = features.common.packages ++ features.build.packages ++ features.development.packages ++ [
-                updateGemsApp
-               ];
+            features.common.env
+            // features.build.env
+            // features.development.env
+            // {
+              packages =
+                features.common.packages
+                ++ features.build.packages
+                ++ features.development.packages
+                ++ [
+                  updateGemsApp
+                ];
               shellHook = features.common.shellHook;
             }
           );
