@@ -18,7 +18,8 @@
 
         readShellApplicationBody = path: let
           isLeadingMetadataLine = line:
-            builtins.match "^[[:space:]]*$" line != null
+            builtins.match "^[[:space:]]*$" line
+            != null
             || builtins.match "^[[:space:]]*#.*$" line != null
             || builtins.match "^[[:space:]]*set([[:space:]].*)?$" line != null;
 
@@ -41,31 +42,32 @@
             )
           );
 
-        fontPackages = with pkgs; [
-          # Computer Modern and traditional TeX fonts
-          bakoma_ttf
-          cm_unicode
-          lmodern
-          # Scientific text and mathematical symbols
-          libertinus
-          stix-two
-          # Broad Unicode coverage
-          noto-fonts
-          noto-fonts-color-emoji
-          noto-fonts-cjk-sans
-          noto-fonts-cjk-serif
-          # Common document and browser fonts
-          dejavu_fonts
-          liberation_ttf
-          roboto
-          inter
-          # Coherent serif, sans and monospace families
-          ibm-plex
-          # Source code
-          source-code-pro
-          fira-code
-        ]
-        ++ lib.attrValues pkgs.tex-gyre;
+        fontPackages = with pkgs;
+          [
+            # Computer Modern and traditional TeX fonts
+            bakoma_ttf
+            cm_unicode
+            lmodern
+            # Scientific text and mathematical symbols
+            libertinus
+            stix-two
+            # Broad Unicode coverage
+            noto-fonts
+            noto-fonts-color-emoji
+            noto-fonts-cjk-sans
+            noto-fonts-cjk-serif
+            # Common document and browser fonts
+            dejavu_fonts
+            liberation_ttf
+            roboto
+            inter
+            # Coherent serif, sans and monospace families
+            ibm-plex
+            # Source code
+            source-code-pro
+            fira-code
+          ]
+          ++ lib.attrValues pkgs.tex-gyre;
 
         /*
         Asciidoctor PDF does not resolve a font family through Fontconfig.
