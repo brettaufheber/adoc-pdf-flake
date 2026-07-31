@@ -16,9 +16,6 @@ function main {
   APP_NAME="${0##*/}"
   FAILURE_LEVEL="WARN"
   SAFE_MODE="unsafe"
-  USE_EXTENSION_BIBTEX=0
-  USE_EXTENSION_MATHEMATICAL=1
-  USE_EXTENSION_KROKI=0
   COLLECT_IMAGES=1
   DISCOVER_THEME=1
   REMOVE_TEMP_DIR=1
@@ -38,12 +35,6 @@ function main {
           'images-dir:,' \
           'themes-dir:,' \
           'attribute:,' \
-          'with-bibtex,' \
-          'no-bibtex,' \
-          'with-kroki,' \
-          'no-kroki,' \
-          'with-mathematical,' \
-          'no-mathematical,' \
           'no-image-collection,' \
           'no-theme-discovery,' \
           'keep-temp,' \
@@ -75,30 +66,6 @@ function main {
       -a|--attribute)
         USER_ATTRIBUTES+=(-a "${2}")
         shift 2
-        ;;
-      --with-bibtex)
-        USE_EXTENSION_BIBTEX=1
-        shift
-        ;;
-      --no-bibtex)
-        USE_EXTENSION_BIBTEX=0
-        shift
-        ;;
-      --with-kroki)
-        USE_EXTENSION_KROKI=1
-        shift
-        ;;
-      --no-kroki)
-        USE_EXTENSION_KROKI=0
-        shift
-        ;;
-      --with-mathematical)
-        USE_EXTENSION_MATHEMATICAL=1
-        shift
-        ;;
-      --no-mathematical)
-        USE_EXTENSION_MATHEMATICAL=0
-        shift
         ;;
       --no-image-collection)
         COLLECT_IMAGES=0
@@ -153,29 +120,6 @@ function main {
     die "input path must be a directory or an .adoc file: ${INPUT_PATH}"
   fi
 
-  if (( USE_EXTENSION_BIBTEX )); then
-    GEN_ARGS+=(
-      -r "asciidoctor-bibtex"
-    )
-  fi
-
-  if (( USE_EXTENSION_MATHEMATICAL )); then
-    GEN_ARGS+=(
-      -r "asciidoctor-mathematical"
-      -a "mathematical-format@=png"
-      -a "mathematical-ppi@=600"
-    )
-  fi
-
-  if (( USE_EXTENSION_KROKI )); then
-    GEN_ARGS+=(
-      -r "asciidoctor-kroki"
-      -a "kroki-fetch-diagram@"
-      -a "kroki-server-url@=https://kroki.io"
-      -a "kroki-http-method@=adaptive"
-    )
-  fi
-
   if [[ -n "${ASCIIDOCTOR_PDF_FONTS_DIR:-}" ]]; then
     GEN_ARGS+=(
       -a "pdf-fontsdir@=${ASCIIDOCTOR_PDF_FONTS_DIR};GEM_FONTS_DIR"
@@ -218,20 +162,46 @@ function generate_pdf {
   local TEMP_GEN_DIR
   local INPUT_FILE
   local OUTPUT_FILE
-  local -a ATTRIBUTES
+  local DOCGEN_USE_BIBTEX
+  local DOCGEN_USE_MATHEMATICAL
+  local DOCGEN_USE_KROKI
+  local -a DEFAULT_ARGS
 
   TEMP_GEN_DIR="${1}"
   INPUT_FILE="${2}"
   OUTPUT_FILE="${INPUT_FILE%.adoc}.pdf"
-  ATTRIBUTES=()
+  DEFAULT_ARGS=()
   shift 2
 
   printf 'Generate file: %s\n' "${OUTPUT_FILE}"
 
   mkdir -p -- "${TEMP_GEN_DIR}"
 
+  if (( DOCGEN_USE_BIBTEX )); then
+    DEFAULT_ARGS+=(
+      -r "asciidoctor-bibtex"
+    )
+  fi
+
+  if (( DOCGEN_USE_MATHEMATICAL )); then
+    DEFAULT_ARGS+=(
+      -r "asciidoctor-mathematical"
+      -a "mathematical-format@=png"
+      -a "mathematical-ppi@=600"
+    )
+  fi
+
+  if (( DOCGEN_USE_KROKI )); then
+    DEFAULT_ARGS+=(
+      -r "asciidoctor-kroki"
+      -a "kroki-fetch-diagram@"
+      -a "kroki-server-url@=https://kroki.io"
+      -a "kroki-http-method@=adaptive"
+    )
+  fi
+
   if (( COLLECT_IMAGES )) && [[ -d "${IMAGES_DIR}" ]]; then
-    ATTRIBUTES+=(
+    DEFAULT_ARGS+=(
       -a "imagesoutdir@=${TEMP_GEN_DIR}"
       -a "imagesdir@=${TEMP_GEN_DIR}"
     )
@@ -239,12 +209,12 @@ function generate_pdf {
   fi
 
   if (( DISCOVER_THEME )) && [[ -d "${PDF_THEMES_DIR}" ]]; then
-    ATTRIBUTES+=(
+    DEFAULT_ARGS+=(
       -a "pdf-themesdir@=${PDF_THEMES_DIR}"
     )
 
     if [[ -r "${PDF_THEMES_DIR}/default-theme.yml" ]]; then
-      ATTRIBUTES+=(
+      DEFAULT_ARGS+=(
         -a "pdf-theme@=default"
       )
     fi
@@ -253,7 +223,7 @@ function generate_pdf {
   asciidoctor-pdf \
     "--failure-level=${FAILURE_LEVEL}" \
     "--safe-mode=${SAFE_MODE}" \
-    "${ATTRIBUTES[@]}" \
+    "${DEFAULT_ARGS[@]}" \
     "${@}" \
     -o "${OUTPUT_FILE}" \
     "${INPUT_FILE}"
