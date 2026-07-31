@@ -18,8 +18,7 @@
 
         readShellApplicationBody = path: let
           isLeadingMetadataLine = line:
-            builtins.match "^[[:space:]]*$" line
-            != null
+            builtins.match "^[[:space:]]*$" line != null
             || builtins.match "^[[:space:]]*#.*$" line != null
             || builtins.match "^[[:space:]]*set([[:space:]].*)?$" line != null;
 
@@ -154,7 +153,21 @@
             ++ [
               asciidoctorToolchain
             ];
-          runtimeEnv = features.common.env // features.tools.env;
+          runtimeEnv =
+            features.common.env
+            // features.tools.env
+            // {
+              # The Ruby source is copied into the Nix store automatically.
+              DOCGEN_FEATURE_RESOLVER = "${./resolve-asciidoctor-features.rb}";
+
+              # Use the normalized Gemfile and lockfile produced by bundlerEnv.
+              DOCGEN_ASCIIDOCTOR_GEMFILE = "${asciidoctorToolchain.confFiles}/Gemfile";
+
+              # Use the toolchain's wrapped Bundler and Ruby so the exact gem
+              # closure is visible during feature detection.
+              DOCGEN_BUNDLE_COMMAND = "${asciidoctorToolchain}/bin/bundle";
+              DOCGEN_RUBY_COMMAND = "${asciidoctorToolchain.wrappedRuby}/bin/ruby";
+            };
           inheritPath = false;
           text = readShellApplicationBody ./scripts/adoc-pdf.sh;
         };
