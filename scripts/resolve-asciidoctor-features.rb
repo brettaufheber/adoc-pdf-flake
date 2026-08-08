@@ -127,9 +127,7 @@ options = {
   safe_mode: 'unsafe',
   attribute_entries: [],
   extra_requires: [],
-  format: 'json',
   include_attributes: false,
-  pretty: false
 }
 
 parser = OptionParser.new do |opts|
@@ -152,16 +150,8 @@ parser = OptionParser.new do |opts|
     options[:extra_requires] << library
   end
 
-  opts.on('--format FORMAT', %w[json shell], 'Output format: json or shell (default: json)') do |format|
-    options[:format] = format
-  end
-
   opts.on('--include-attributes', 'Include all resolved header attributes in JSON output') do
     options[:include_attributes] = true
-  end
-
-  opts.on('--pretty', 'Pretty-print JSON output') do
-    options[:pretty] = true
   end
 
   opts.on('-h', '--help', 'Show this help') do
@@ -199,9 +189,4 @@ result = Docgen::FeatureResolver.resolve(
 
 result.delete('attributes') unless options[:include_attributes]
 
-case options[:format]
-when 'json'
-  puts(options[:pretty] ? JSON.pretty_generate(result) : JSON.generate(result))
-when 'shell'
-  puts Docgen::FeatureResolver.shell_output(result)
-end
+puts(JSON.generate(result))
