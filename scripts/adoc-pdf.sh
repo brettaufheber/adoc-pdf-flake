@@ -154,18 +154,16 @@ function generate_pdf {
   OUTPUT_FILE="${INPUT_FILE%.adoc}.pdf"
   ADOCTOR_ARGS=()
 
+  mkdir -p -- "${TEMP_GEN_DIR}"
+
   prepare_adoctor_args "${@}"
-  shift 2
 
   printf 'Generate file: %s\n' "${OUTPUT_FILE}"
-
-  mkdir -p -- "${TEMP_GEN_DIR}"
 
   asciidoctor-pdf \
     "--failure-level=${FAILURE_LEVEL}" \
     "--safe-mode=${SAFE_MODE}" \
     "${ADOCTOR_ARGS[@]}" \
-    "${@}" \
     -o "${OUTPUT_FILE}" \
     "${INPUT_FILE}"
 }
@@ -175,13 +173,14 @@ function prepare_adoctor_args {
   local INPUT_FILE
   local ATTRIBUTES_JSON
   local FEATURES_JSON
+  local RESOLVED_IMAGES_DIR
+  local SOURCE_IMAGES_DIR
   local DOCGEN_USE_BIBTEX
   local DOCGEN_USE_MATHEMATICAL
   local DOCGEN_USE_KROKI
 
   TEMP_GEN_DIR="${1}"
   INPUT_FILE="${2}"
-
   shift 2
 
   # ADOCTOR_ARGS is local to generate_pdf and visible here through dynamic scoping
@@ -201,17 +200,6 @@ function prepare_adoctor_args {
     ADOCTOR_ARGS+=(
       -a "pdf-theme@=${INPUT_ROOT}/themes/default-theme.yml"
     )
-  fi
-
-  if (( COLLECT_IMAGES )); then
-    ADOCTOR_ARGS+=(
-      -a "imagesoutdir@=${TEMP_GEN_DIR}"
-      -a "imagesdir@=${TEMP_GEN_DIR}"
-    )
-
-    if [[ -d "${IMAGES_DIR}" ]]; then
-      cp -R -- "${IMAGES_DIR}/." "${TEMP_GEN_DIR}/"
-    fi
   fi
 
   ATTRIBUTES_JSON="$(
@@ -268,10 +256,45 @@ function prepare_adoctor_args {
       -a "kroki-http-method@=adaptive"
     )
   fi
+
+  if (( COLLECT_IMAGES )); then
+    INPUT_DIR="$(dirname -- "${INPUT_FILE}")"
+
+    if [[ -n "${IMAGES_DIR}" ]]; then
+      SOURCE_IMAGES_DIR="${IMAGES_DIR}"
+    else
+      RESOLVED_IMAGES_DIR="$(
+        jq -r '.imagesdir // ""' <<< "${ATTRIBUTES_JSON}"
+      )"
+
+      if [[ -z "${RESOLVED_IMAGES_DIR}" ]]; then
+        SOURCE_IMAGES_DIR="${INPUT_DIR}"
+      elif [[ "${RESOLVED_IMAGES_DIR}" == /* ]]; then
+        SOURCE_IMAGES_DIR="${RESOLVED_IMAGES_DIR}"
+      else
+        SOURCE_IMAGES_DIR="${INPUT_DIR}/${RESOLVED_IMAGES_DIR}"
+      fi
+    fi
+
+    if [[ -d "${SOURCE_IMAGES_DIR}" ]]; then
+      cp -R -- "${SOURCE_IMAGES_DIR}/." "${TEMP_GEN_DIR}/"
+    fi
+  fi
+
+  # explicit user attributes override all soft wrapper defaults
+  ADOCTOR_ARGS+=("${@}")
+
+  # internal image collection requires Kroki and the PDF converter to use exactly the same directory
+  if (( COLLECT_IMAGES )); then
+    ADOCTOR_ARGS+=(
+      -a "imagesoutdir=${TEMP_GEN_DIR}"
+      -a "imagesdir=${TEMP_GEN_DIR}"
+    )
+  fi
 }
 
 # shellcheck disable=SC2317,SC2329
-# Called indirectly via: trap cleanup EXIT
+# called indirectly via: trap cleanup EXIT
 function cleanup {
   local EXIT_STATUS="${?}"
 
