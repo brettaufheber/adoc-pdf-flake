@@ -10,7 +10,6 @@ function main {
   local ADOC_DIR
   local ADOC_LIST
   local TEMP_GENERATED_ROOT
-  local -a GEN_ARGS
   local -a USER_ATTRIBUTES
 
   APP_NAME="${0##*/}"
@@ -20,20 +19,20 @@ function main {
   DISCOVER_THEME=1
   REMOVE_TEMP_DIR=1
   IMAGES_DIR="${PWD}/images"
-  PDF_THEMES_DIR="${PWD}/themes"
-  GEN_ARGS=()
   USER_ATTRIBUTES=()
+
+  SCRIPT_DIR="$(realpath "$(dirname "${BASH_SOURCE[0]}")")"
+  ASCIIDOCTOR_GEMFILE="${SCRIPT_DIR}/../nix/asciidoctor/Gemfile"
 
   OPTS="$(
     getopt \
       --name "${APP_NAME}" \
-      --options 'f:s:i:t:a:h' \
+      --options 'f:s:i:a:h' \
       --longoptions "$(
         printf '%s' \
           'failure-level:,' \
           'safe-mode:,' \
           'images-dir:,' \
-          'themes-dir:,' \
           'attribute:,' \
           'no-image-collection,' \
           'no-theme-discovery,' \
@@ -57,10 +56,6 @@ function main {
         ;;
       -i|--images-dir)
         IMAGES_DIR="${2}"
-        shift 2
-        ;;
-      -t|--themes-dir)
-        PDF_THEMES_DIR="${2}"
         shift 2
         ;;
       -a|--attribute)
@@ -120,18 +115,6 @@ function main {
     die "input path must be a directory or an .adoc file: ${INPUT_PATH}"
   fi
 
-  if [[ -n "${ASCIIDOCTOR_PDF_FONTS_DIR:-}" ]]; then
-    GEN_ARGS+=(
-      -a "pdf-fontsdir@=${ASCIIDOCTOR_PDF_FONTS_DIR};GEM_FONTS_DIR"
-    )
-  fi
-
-  GEN_ARGS+=(
-    -a "allow-uri-read@"
-    -a "compress@"
-    -a "source-highlighter@=rouge"
-  )
-
   if [[ -d "${INPUT_PATH}" ]]; then
     find "${INPUT_PATH}" \
       \( -type d -path '*/.*' -prune \) -o \
@@ -153,7 +136,6 @@ function main {
     generate_pdf \
       "${TEMP_GENERATED_ROOT}/${RELATIVE_INPUT_PATH}" \
       "${ADOC_FILE}" \
-      "${GEN_ARGS[@]}" \
       "${USER_ATTRIBUTES[@]}"
   done < "${ADOC_LIST}"
 }
@@ -162,29 +144,111 @@ function generate_pdf {
   local TEMP_GEN_DIR
   local INPUT_FILE
   local OUTPUT_FILE
-  local DOCGEN_USE_BIBTEX
-  local DOCGEN_USE_MATHEMATICAL
-  local DOCGEN_USE_KROKI
-  local -a DEFAULT_ARGS
+  local -a ADOCTOR_ARGS
 
   TEMP_GEN_DIR="${1}"
   INPUT_FILE="${2}"
   OUTPUT_FILE="${INPUT_FILE%.adoc}.pdf"
-  DEFAULT_ARGS=()
+  ADOCTOR_ARGS=()
+
+  prepare_adoctor_args "${@}"
   shift 2
 
   printf 'Generate file: %s\n' "${OUTPUT_FILE}"
 
   mkdir -p -- "${TEMP_GEN_DIR}"
 
+  asciidoctor-pdf \
+    "--failure-level=${FAILURE_LEVEL}" \
+    "--safe-mode=${SAFE_MODE}" \
+    "${ADOCTOR_ARGS[@]}" \
+    "${@}" \
+    -o "${OUTPUT_FILE}" \
+    "${INPUT_FILE}"
+}
+
+function prepare_adoctor_args {
+  local TEMP_GEN_DIR
+  local INPUT_FILE
+  local ATTRIBUTES_JSON
+  local FEATURES_JSON
+  local DOCGEN_USE_BIBTEX
+  local DOCGEN_USE_MATHEMATICAL
+  local DOCGEN_USE_KROKI
+
+  TEMP_GEN_DIR="${1}"
+  INPUT_FILE="${2}"
+
+  shift 2
+
+  # ADOCTOR_ARGS is local to generate_pdf and visible here through dynamic scoping
+  ADOCTOR_ARGS+=(
+    -a "allow-uri-read@"
+    -a "compress@"
+    -a "source-highlighter@=rouge"
+  )
+
+  if [[ -n "${ASCIIDOCTOR_PDF_FONTS_DIR:-}" ]]; then
+    ADOCTOR_ARGS+=(
+      -a "pdf-fontsdir@=${ASCIIDOCTOR_PDF_FONTS_DIR};GEM_FONTS_DIR"
+    )
+  fi
+
+  if (( DISCOVER_THEME )) && [[ -r "${INPUT_ROOT}/themes/default-theme.yml" ]]; then
+    ADOCTOR_ARGS+=(
+      -a "pdf-theme@=${INPUT_ROOT}/themes/default-theme.yml"
+    )
+  fi
+
+  if (( COLLECT_IMAGES )); then
+    ADOCTOR_ARGS+=(
+      -a "imagesoutdir@=${TEMP_GEN_DIR}"
+      -a "imagesdir@=${TEMP_GEN_DIR}"
+    )
+    if [[ -d "${IMAGES_DIR}" ]]; then
+      cp -R -- "${IMAGES_DIR}/." "${TEMP_GEN_DIR}/"
+    fi
+  fi
+
+  ATTRIBUTES_JSON="$(
+    BUNDLE_GEMFILE="${ASCIIDOCTOR_GEMFILE}" \
+    bundle exec ruby \
+      "${SCRIPT_DIR}/../resolve-asciidoctor-attributes.rb" \
+        --backend 'pdf' \
+        --safe-mode "${SAFE_MODE}" \
+        "${ADOCTOR_ARGS[@]}" \
+        "${@}" \
+        "${INPUT_FILE}"
+  )"
+
+  FEATURES_JSON="$(
+    jq -cf "${SCRIPT_DIR}/check-asciidoctor-features.jq" \
+      <<< "${ATTRIBUTES_JSON}"
+  )"
+
+  DOCGEN_USE_BIBTEX="$(
+    jq -r '.bibtex | if . then 1 else 0 end' \
+      <<< "${FEATURES_JSON}"
+  )"
+
+  DOCGEN_USE_MATHEMATICAL="$(
+    jq -r '.mathematical | if . then 1 else 0 end' \
+      <<< "${FEATURES_JSON}"
+  )"
+
+  DOCGEN_USE_KROKI="$(
+    jq -r '.kroki | if . then 1 else 0 end' \
+      <<< "${FEATURES_JSON}"
+  )"
+
   if (( DOCGEN_USE_BIBTEX )); then
-    DEFAULT_ARGS+=(
+    ADOCTOR_ARGS+=(
       -r "asciidoctor-bibtex"
     )
   fi
 
   if (( DOCGEN_USE_MATHEMATICAL )); then
-    DEFAULT_ARGS+=(
+    ADOCTOR_ARGS+=(
       -r "asciidoctor-mathematical"
       -a "mathematical-format@=png"
       -a "mathematical-ppi@=600"
@@ -192,41 +256,13 @@ function generate_pdf {
   fi
 
   if (( DOCGEN_USE_KROKI )); then
-    DEFAULT_ARGS+=(
+    ADOCTOR_ARGS+=(
       -r "asciidoctor-kroki"
       -a "kroki-fetch-diagram@"
       -a "kroki-server-url@=https://kroki.io"
       -a "kroki-http-method@=adaptive"
     )
   fi
-
-  if (( COLLECT_IMAGES )) && [[ -d "${IMAGES_DIR}" ]]; then
-    DEFAULT_ARGS+=(
-      -a "imagesoutdir@=${TEMP_GEN_DIR}"
-      -a "imagesdir@=${TEMP_GEN_DIR}"
-    )
-    cp -R -- "${IMAGES_DIR}/." "${TEMP_GEN_DIR}/"
-  fi
-
-  if (( DISCOVER_THEME )) && [[ -d "${PDF_THEMES_DIR}" ]]; then
-    DEFAULT_ARGS+=(
-      -a "pdf-themesdir@=${PDF_THEMES_DIR}"
-    )
-
-    if [[ -r "${PDF_THEMES_DIR}/default-theme.yml" ]]; then
-      DEFAULT_ARGS+=(
-        -a "pdf-theme@=default"
-      )
-    fi
-  fi
-
-  asciidoctor-pdf \
-    "--failure-level=${FAILURE_LEVEL}" \
-    "--safe-mode=${SAFE_MODE}" \
-    "${DEFAULT_ARGS[@]}" \
-    "${@}" \
-    -o "${OUTPUT_FILE}" \
-    "${INPUT_FILE}"
 }
 
 # shellcheck disable=SC2317,SC2329
@@ -271,32 +307,30 @@ Options:
   -i, --images-dir DIR
       Static image directory. Default: ./images
 
-  -t, --themes-dir DIR
-      PDF theme directory. Default: ./themes
-
   -a, --attribute ATTRIBUTE
       Pass an attribute to asciidoctor-pdf. Repeatable.
-
-      --with-bibtex
-      Load asciidoctor-bibtex.
-
-      --no-mathematical
-      Do not load asciidoctor-mathematical.
-
-      --no-kroki
-      Do not load asciidoctor-kroki.
 
       --no-image-collection
       Do not collect images in a temporary directory.
 
       --no-theme-discovery
-      Do not provide or discover a PDF theme.
+          Do not automatically use INPUT_ROOT/themes/default-theme.yml as theme file.
 
       --keep-temp
       Keep the temporary directory.
 
   -h, --help
       Show this help.
+
+Extension detection:
+  asciidoctor-bibtex
+      Enabled by docgen-use-bibtex or any resolved bibtex-* attribute.
+
+  asciidoctor-mathematical
+      Enabled by docgen-use-mathematical or a supported stem value.
+
+  asciidoctor-kroki
+      Enabled by docgen-use-kroki or any resolved kroki-* attribute.
 _EOI_
 }
 
