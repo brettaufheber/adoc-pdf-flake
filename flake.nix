@@ -95,6 +95,7 @@
               watchexec
               cacert
               bash
+              jq
             ];
             env = {
               SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
@@ -157,14 +158,9 @@
             features.common.env
             // features.tools.env
             // {
-              # The Ruby source is copied into the Nix store automatically.
-              DOCGEN_FEATURE_RESOLVER = "${./resolve-asciidoctor-features.rb}";
-
-              # Use the normalized Gemfile and lockfile produced by bundlerEnv.
+              DOCGEN_ATTRIBUTE_RESOLVE = "${./scripts/resolve-asciidoctor-attributes.rb}";
+              DOCGEN_FEATURE_CHECK = "${./scripts/check-asciidoctor-features.jq}";
               DOCGEN_ASCIIDOCTOR_GEMFILE = "${asciidoctorToolchain.confFiles}/Gemfile";
-
-              # Use the toolchain's wrapped Bundler and Ruby so the exact gem
-              # closure is visible during feature detection.
               DOCGEN_BUNDLE_COMMAND = "${asciidoctorToolchain}/bin/bundle";
               DOCGEN_RUBY_COMMAND = "${asciidoctorToolchain.wrappedRuby}/bin/ruby";
             };
