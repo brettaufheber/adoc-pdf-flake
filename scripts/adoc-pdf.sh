@@ -21,8 +21,11 @@ function main {
   IMAGES_DIR="${PWD}/images"
   USER_ATTRIBUTES=()
 
-  SCRIPT_DIR="$(realpath "$(dirname "${BASH_SOURCE[0]}")")"
-  ASCIIDOCTOR_GEMFILE="${SCRIPT_DIR}/../nix/asciidoctor/Gemfile"
+  : "${DOCGEN_ATTRIBUTE_RESOLVE:?DOCGEN_ATTRIBUTE_RESOLVE is not set}"
+  : "${DOCGEN_FEATURE_CHECK:?DOCGEN_FEATURE_CHECK is not set}"
+  : "${DOCGEN_ASCIIDOCTOR_GEMFILE:?DOCGEN_ASCIIDOCTOR_GEMFILE is not set}"
+  : "${DOCGEN_BUNDLE_COMMAND:?DOCGEN_BUNDLE_COMMAND is not set}"
+  : "${DOCGEN_RUBY_COMMAND:?DOCGEN_RUBY_COMMAND is not set}"
 
   OPTS="$(
     getopt \
@@ -205,24 +208,26 @@ function prepare_adoctor_args {
       -a "imagesoutdir@=${TEMP_GEN_DIR}"
       -a "imagesdir@=${TEMP_GEN_DIR}"
     )
+
     if [[ -d "${IMAGES_DIR}" ]]; then
       cp -R -- "${IMAGES_DIR}/." "${TEMP_GEN_DIR}/"
     fi
   fi
 
   ATTRIBUTES_JSON="$(
-    BUNDLE_GEMFILE="${ASCIIDOCTOR_GEMFILE}" \
-    bundle exec ruby \
-      "${SCRIPT_DIR}/../resolve-asciidoctor-attributes.rb" \
-        --backend 'pdf' \
-        --safe-mode "${SAFE_MODE}" \
-        "${ADOCTOR_ARGS[@]}" \
-        "${@}" \
-        "${INPUT_FILE}"
+    BUNDLE_GEMFILE="${DOCGEN_ASCIIDOCTOR_GEMFILE}" \
+      "${DOCGEN_BUNDLE_COMMAND}" exec \
+        "${DOCGEN_RUBY_COMMAND}" \
+          "${DOCGEN_ATTRIBUTE_RESOLVE}" \
+            --backend 'pdf' \
+            --safe-mode "${SAFE_MODE}" \
+            "${ADOCTOR_ARGS[@]}" \
+            "${@}" \
+            "${INPUT_FILE}"
   )"
 
   FEATURES_JSON="$(
-    jq -cf "${SCRIPT_DIR}/check-asciidoctor-features.jq" \
+    jq -cf "${DOCGEN_FEATURE_CHECK}" \
       <<< "${ATTRIBUTES_JSON}"
   )"
 
