@@ -171,6 +171,7 @@ function generate_pdf {
 function prepare_adoctor_args {
   local TEMP_GEN_DIR
   local INPUT_FILE
+  local INPUT_DIR
   local ATTRIBUTES_JSON
   local FEATURES_JSON
   local RESOLVED_IMAGES_DIR
