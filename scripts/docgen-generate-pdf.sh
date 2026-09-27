@@ -188,6 +188,7 @@ function prepare_adoctor_args {
     -a "allow-uri-read@"
     -a "compress@"
     -a "source-highlighter@=rouge"
+    -a "imagesoutdir@=${TEMP_GEN_DIR}"
   )
 
   if [[ -n "${ASCIIDOCTOR_PDF_FONTS_DIR:-}" ]]; then
@@ -251,18 +252,12 @@ function prepare_adoctor_args {
   if (( DOCGEN_USE_KROKI )); then
     ADOCTOR_ARGS+=(
       -r "asciidoctor-kroki"
-      -a "kroki-fetch-diagram@"
       -a "kroki-server-url@=https://kroki.io"
-      -a "kroki-http-method@=adaptive"
     )
   fi
 
   # explicit user attributes override all soft wrapper defaults
   ADOCTOR_ARGS+=("${@}")
-
-  ADOCTOR_ARGS+=(
-    -a "imagesoutdir=${TEMP_GEN_DIR}"
-  )
 }
 
 # shellcheck disable=SC2317,SC2329
