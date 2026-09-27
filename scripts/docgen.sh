@@ -6,61 +6,44 @@ SLEF_PATH="$(realpath -- "${BASH_SOURCE[0]}")"
 readonly APP_NAME SLEF_PATH
 
 function main {
-  local OPTS
-  local DEBOUNCE
-  local WORK_DIR_OPTION
-  local WORK_DIR
-  local INPUT_PATH
-  local RESOLVED_INPUT_PATH
-  local ADOC_FILE
-  local ADOC_FILE_BASE64
-  local ADOC_FILES_RESULT
-  local WATCH_PATH
-  local RESOLVED_WATCH_PATH
-  local -a INPUT_PATHS
-  local -a RESOLVED_INPUT_PATHS
-  local -a ADOC_FILES
-  local -a WATCH_PATHS
-  local -a RESOLVED_WATCH_FILES
-  local -a RESOLVED_WATCH_DIRS
-  local -a GENERATOR_ARGS
-  local -a USER_ATTRIBUTES
-  local -a WATCH_ARGS
-
-  DEBOUNCE="250ms"
-  WORK_DIR_OPTION="."
-  INPUT_PATHS=()
-  RESOLVED_INPUT_PATHS=()
-  ADOC_FILES=()
-  WATCH_PATHS=()
-  RESOLVED_WATCH_FILES=()
-  RESOLVED_WATCH_DIRS=()
-  GENERATOR_ARGS=()
-  USER_ATTRIBUTES=()
-  WATCH_ARGS=()
-
-  FAILURE_LEVEL="WARN"
-  SAFE_MODE="unsafe"
-  DISCOVER_THEME=1
-  REMOVE_TEMP_DIR=1
-  WATCH_MODE=0
-
-  [[ -x "${SLEF_PATH}" ]] ||
-    die "docgen command is not executable: ${SLEF_PATH}"
-
-  # Internal mode used at the former docgen/docgen-generate-pdf boundary.
+  # Internal processes inherit the validated runtime environment and working
+  # directory from the public invocation.
   if [[ "${DOCGEN_GENERATE:-0}" == 1 ]]; then
     generate_documents "${@}"
     return
   fi
 
-  #
-  # Internal mode used by watchexec.
-  #
   if [[ "${DOCGEN_WATCH_DISPATCH:-0}" == 1 ]]; then
     dispatch_watch_events "${@}"
     return
   fi
+
+  local OPTS
+  local DEBOUNCE
+  local WORK_DIR_OPTION
+  local WORK_DIR
+  local FAILURE_LEVEL
+  local SAFE_MODE
+  local DISCOVER_THEME
+  local REMOVE_TEMP_DIR
+  local WATCH_MODE
+  local -a ADOC_FILES
+  local -a WATCH_PATHS=()
+  # Nameref target passed to resolve_watch_paths and start_watcher.
+  # shellcheck disable=SC2034
+  local -a RESOLVED_WATCH_FILES
+  # shellcheck disable=SC2034
+  local -a RESOLVED_WATCH_DIRS
+  local -a GENERATOR_CONFIG
+  local -a USER_ATTRIBUTES=()
+
+  DEBOUNCE="250ms"
+  WORK_DIR_OPTION="."
+  FAILURE_LEVEL="WARN"
+  SAFE_MODE="unsafe"
+  DISCOVER_THEME=1
+  REMOVE_TEMP_DIR=1
+  WATCH_MODE=0
 
   OPTS="$(
     getopt \
@@ -140,6 +123,8 @@ function main {
     die "--watch-path requires --watch"
   fi
 
+  validate_runtime_environment
+
   [[ -d "${WORK_DIR_OPTION}" ]] ||
     die "working directory does not exist or is not a directory: ${WORK_DIR_OPTION}"
 
@@ -151,27 +136,73 @@ function main {
   #
   cd -- "${WORK_DIR}"
 
-  if (($# == 0)); then
-    INPUT_PATHS=("${PWD}")
-  else
-    INPUT_PATHS=("${@}")
-  fi
+  resolve_input_documents \
+    "${WORK_DIR}" \
+    ADOC_FILES \
+    "${@}"
+
+  # Serialize the normalized generator configuration. The generator inherits
+  # the already selected working directory from this process.
+  GENERATOR_CONFIG=(
+    "${FAILURE_LEVEL}"
+    "${SAFE_MODE}"
+    "${DISCOVER_THEME}"
+    "${REMOVE_TEMP_DIR}"
+    "${#USER_ATTRIBUTES[@]}"
+    "${USER_ATTRIBUTES[@]}"
+  )
 
   #
-  # Validate and resolve all input selections.
+  # Preserve the former process boundary by invoking this script in its
+  # internal generator mode.
   #
-  for INPUT_PATH in "${INPUT_PATHS[@]}"; do
+  if (( ! WATCH_MODE )); then
+    run_pdf_generator \
+      "${GENERATOR_CONFIG[@]}" \
+      "${ADOC_FILES[@]}"
+    return
+  fi
+
+  resolve_watch_paths \
+    "${WORK_DIR}" \
+    RESOLVED_WATCH_FILES \
+    RESOLVED_WATCH_DIRS \
+    "${WATCH_PATHS[@]}"
+
+  start_watcher \
+    "${DEBOUNCE}" \
+    "${WORK_DIR}" \
+    ADOC_FILES \
+    RESOLVED_WATCH_FILES \
+    RESOLVED_WATCH_DIRS \
+    GENERATOR_CONFIG
+}
+
+function resolve_input_documents {
+  local WORK_DIR="${1}"
+  local -n OUTPUT_DOCUMENTS="${2}"
+  local INPUT_PATH
+  local RESOLVED_INPUT_PATH
+  local ADOC_FILE
+  local ADOC_FILE_BASE64
+  local ADOC_FILES_RESULT
+  local -a RESOLVED_INPUT_PATHS=()
+  shift 2
+  # ShellCheck cannot trace assignments through a nameref parameter.
+  # shellcheck disable=SC2034
+  OUTPUT_DOCUMENTS=()
+
+  if (($# == 0)); then
+    set -- "${WORK_DIR}"
+  fi
+
+  for INPUT_PATH in "${@}"; do
     [[ -e "${INPUT_PATH}" ]] ||
       die "input path does not exist: ${INPUT_PATH}"
 
     RESOLVED_INPUT_PATH="$(realpath -- "${INPUT_PATH}")"
 
-    require_below_work_dir \
-      "${WORK_DIR}" \
-      "${RESOLVED_INPUT_PATH}" \
-      "input path"
-
-    require_non_hidden_path \
+    require_project_path \
       "${WORK_DIR}" \
       "${RESOLVED_INPUT_PATH}" \
       "input path"
@@ -189,13 +220,8 @@ function main {
     RESOLVED_INPUT_PATHS+=("${RESOLVED_INPUT_PATH}")
   done
 
-  #
-  # Resolve all selected documents.
-  #
-  # find emits NUL-separated paths so whitespace and newlines in path
-  # names do not delimit entries. jq turns them into line-safe Base64
-  # values and also removes duplicates caused by overlapping selections.
-  #
+  # Base64 provides a line-safe representation without hiding failures from
+  # find or jq behind a process substitution.
   ADOC_FILES_RESULT="$(
     find "${RESOLVED_INPUT_PATHS[@]}" \
       \( -type d -name '.*' -prune \) -o \
@@ -207,111 +233,82 @@ function main {
     [[ -n "${ADOC_FILE_BASE64}" ]] || continue
     ADOC_FILE="$(printf '%s' "${ADOC_FILE_BASE64}" | base64 --decode && printf '\034')"
     ADOC_FILE="${ADOC_FILE%$'\034'}"
-    ADOC_FILES+=("${ADOC_FILE}")
+    # ShellCheck cannot trace assignments through a nameref parameter.
+    # shellcheck disable=SC2034
+    OUTPUT_DOCUMENTS+=("${ADOC_FILE}")
   done <<< "${ADOC_FILES_RESULT}"
 
   if ((${#ADOC_FILES[@]} == 0)); then
     die "no .adoc files found in selected input paths"
   fi
+}
 
-  #
-  # Serialize the normalized generator configuration for the internal
-  # self-invocation. The element count keeps repeated attributes unambiguous.
-  #
-  GENERATOR_ARGS=(
-    "${WORK_DIR}"
-    "${FAILURE_LEVEL}"
-    "${SAFE_MODE}"
-    "${DISCOVER_THEME}"
-    "${REMOVE_TEMP_DIR}"
-    "${#USER_ATTRIBUTES[@]}"
-    "${USER_ATTRIBUTES[@]}"
-  )
+function resolve_watch_paths {
+  local WORK_DIR="${1}"
+  local -n OUTPUT_WATCH_FILES="${2}"
+  local -n OUTPUT_WATCH_DIRS="${3}"
+  local WATCH_PATH
+  local RESOLVED_WATCH_PATH
+  shift 3
 
-  #
-  # Preserve the former process boundary by invoking this script in its
-  # internal generator mode.
-  #
-  if (( ! WATCH_MODE )); then
-    run_pdf_generator \
-      "${GENERATOR_ARGS[@]}" \
-      "${ADOC_FILES[@]}"
-    return
-  fi
+  # ShellCheck cannot trace assignments through nameref parameters.
+  # shellcheck disable=SC2034
+  OUTPUT_WATCH_FILES=()
+  # shellcheck disable=SC2034
+  OUTPUT_WATCH_DIRS=()
 
-  #
-  # Validate, resolve, and classify explicitly requested watch paths.
-  #
-  # Their type is remembered now so that a later removal event does not
-  # make the dispatcher dependent on the path still existing.
-  #
-  for WATCH_PATH in "${WATCH_PATHS[@]}"; do
+  for WATCH_PATH in "${@}"; do
     [[ -e "${WATCH_PATH}" ]] ||
       die "watch path does not exist: ${WATCH_PATH}"
 
     RESOLVED_WATCH_PATH="$(realpath -- "${WATCH_PATH}")"
 
-    require_below_work_dir \
-      "${WORK_DIR}" \
-      "${RESOLVED_WATCH_PATH}" \
-      "watch path"
-
-    require_non_hidden_path \
+    require_project_path \
       "${WORK_DIR}" \
       "${RESOLVED_WATCH_PATH}" \
       "watch path"
 
     if [[ -d "${RESOLVED_WATCH_PATH}" ]]; then
-      RESOLVED_WATCH_DIRS+=("${RESOLVED_WATCH_PATH}")
+      # shellcheck disable=SC2034
+      OUTPUT_WATCH_DIRS+=("${RESOLVED_WATCH_PATH}")
     else
-      RESOLVED_WATCH_FILES+=("${RESOLVED_WATCH_PATH}")
+      # shellcheck disable=SC2034
+      OUTPUT_WATCH_FILES+=("${RESOLVED_WATCH_PATH}")
     fi
   done
+}
 
-  #
-  # Initial preview build. Any generator failure aborts before the watcher
-  # starts so its exit status is not hidden.
-  #
+function start_watcher {
+  local DEBOUNCE="${1}"
+  local WORK_DIR="${2}"
+  local -n DOCUMENTS_REF="${3}"
+  local -n WATCH_FILES_REF="${4}"
+  local -n WATCH_DIRS_REF="${5}"
+  local -n GENERATOR_CONFIG_REF="${6}"
+  local WATCH_PATH
+  local -a WATCH_ARGS
+
+  # A failed initial build must prevent the watcher from starting.
   run_pdf_generator \
-    "${GENERATOR_ARGS[@]}" \
-    "${ADOC_FILES[@]}"
+    "${GENERATOR_CONFIG_REF[@]}" \
+    "${DOCUMENTS_REF[@]}"
 
   printf 'Watching %d document(s) below %s. Press Ctrl-C to stop.\n' \
-    "${#ADOC_FILES[@]}" \
+    "${#DOCUMENTS_REF[@]}" \
     "${WORK_DIR}" >&2
 
-  #
-  # One watchexec instance watches all concrete input documents.
-  #
-  # Input directories themselves are intentionally not watched. The set
-  # of selected documents therefore remains fixed until docgen is
-  # restarted.
-  #
-  for ADOC_FILE in "${ADOC_FILES[@]}"; do
-    WATCH_ARGS+=(
-      --watch "${ADOC_FILE}"
-    )
+  # Input directories are intentionally absent. The selected document set
+  # remains fixed until docgen is restarted.
+  for WATCH_PATH in \
+    "${DOCUMENTS_REF[@]}" \
+    "${WATCH_FILES_REF[@]}" \
+    "${WATCH_DIRS_REF[@]}"
+  do
+    WATCH_ARGS+=(--watch "${WATCH_PATH}")
   done
 
-  for RESOLVED_WATCH_PATH in "${RESOLVED_WATCH_FILES[@]}"; do
-    WATCH_ARGS+=(
-      --watch "${RESOLVED_WATCH_PATH}"
-    )
-  done
-
-  for RESOLVED_WATCH_PATH in "${RESOLVED_WATCH_DIRS[@]}"; do
-    WATCH_ARGS+=(
-      --watch "${RESOLVED_WATCH_PATH}"
-    )
-  done
-
-  #
-  # docgen is replaced by watchexec. Bash therefore does not supervise
-  # any long-running child processes.
-  #
-  # Watchexec starts this script in internal dispatch mode for each
-  # debounced event batch and supplies that batch as JSON on stdin.
-  #
+  # Replace docgen with one watchexec process. Each debounced event batch
+  # starts this script in internal dispatch mode and is supplied as JSON.
   exec watchexec \
     --postpone \
     --exit-on-error \
@@ -327,17 +324,46 @@ function main {
     --env DOCGEN_WATCH_DISPATCH=1 \
     -- \
     "${SLEF_PATH}" \
-      "${#ADOC_FILES[@]}" \
-      "${ADOC_FILES[@]}" \
-      "${#RESOLVED_WATCH_FILES[@]}" \
-      "${RESOLVED_WATCH_FILES[@]}" \
-      "${#RESOLVED_WATCH_DIRS[@]}" \
-      "${RESOLVED_WATCH_DIRS[@]}" \
-      "${#GENERATOR_ARGS[@]}" \
-      "${GENERATOR_ARGS[@]}"
+      "${#DOCUMENTS_REF[@]}" \
+      "${DOCUMENTS_REF[@]}" \
+      "${#WATCH_FILES_REF[@]}" \
+      "${WATCH_FILES_REF[@]}" \
+      "${#WATCH_DIRS_REF[@]}" \
+      "${WATCH_DIRS_REF[@]}" \
+      "${#GENERATOR_CONFIG_REF[@]}" \
+      "${GENERATOR_CONFIG_REF[@]}"
 }
 
-function require_below_work_dir {
+function validate_runtime_environment {
+  : "${DOCGEN_ATTRIBUTE_RESOLVE:?DOCGEN_ATTRIBUTE_RESOLVE is not set}"
+  : "${DOCGEN_FEATURE_CHECK:?DOCGEN_FEATURE_CHECK is not set}"
+  : "${DOCGEN_ASCIIDOCTOR_GEMFILE:?DOCGEN_ASCIIDOCTOR_GEMFILE is not set}"
+  : "${DOCGEN_BUNDLE_COMMAND:?DOCGEN_BUNDLE_COMMAND is not set}"
+  : "${DOCGEN_RUBY_COMMAND:?DOCGEN_RUBY_COMMAND is not set}"
+
+  [[ -x "${SLEF_PATH}" ]] ||
+    die "docgen command is not executable: ${SLEF_PATH}"
+
+  [[ -r "${DOCGEN_ATTRIBUTE_RESOLVE}" ]] ||
+    die "attribute resolver is not readable: ${DOCGEN_ATTRIBUTE_RESOLVE}"
+
+  [[ -r "${DOCGEN_FEATURE_CHECK}" ]] ||
+    die "feature check is not readable: ${DOCGEN_FEATURE_CHECK}"
+
+  [[ -r "${DOCGEN_ASCIIDOCTOR_GEMFILE}" ]] ||
+    die "Asciidoctor Gemfile is not readable: ${DOCGEN_ASCIIDOCTOR_GEMFILE}"
+
+  [[ -x "${DOCGEN_BUNDLE_COMMAND}" ]] ||
+    die "bundle command is not executable: ${DOCGEN_BUNDLE_COMMAND}"
+
+  [[ -x "${DOCGEN_RUBY_COMMAND}" ]] ||
+    die "Ruby command is not executable: ${DOCGEN_RUBY_COMMAND}"
+
+  command -v asciidoctor-pdf >/dev/null 2>&1 ||
+    die "asciidoctor-pdf command is not executable"
+}
+
+function require_project_path {
   local WORK_DIR="${1}"
   local PATH_TO_CHECK="${2}"
   local PATH_DESCRIPTION="${3}"
@@ -354,19 +380,6 @@ function require_below_work_dir {
       die "${PATH_DESCRIPTION} is outside working directory: ${PATH_TO_CHECK}"
       ;;
   esac
-}
-
-function require_non_hidden_path {
-  local WORK_DIR="${1}"
-  local PATH_TO_CHECK="${2}"
-  local PATH_DESCRIPTION="${3}"
-  local RELATIVE_PATH
-
-  RELATIVE_PATH="$(
-    realpath \
-      --relative-to="${WORK_DIR}" \
-      -- "${PATH_TO_CHECK}"
-  )"
 
   if [[ "${RELATIVE_PATH}" != "." &&
         ( "${RELATIVE_PATH}" == .* ||
@@ -377,101 +390,47 @@ function require_non_hidden_path {
   fi
 }
 
+function consume_counted_array {
+  local -n RESULT_REF="${1}"
+  local -n SOURCE_REF="${2}"
+  local CONTEXT="${3}"
+  local COUNT="${SOURCE_REF[0]:-}"
+
+  [[ "${COUNT}" =~ ^[0-9]+$ ]] ||
+    die "invalid internal ${CONTEXT} arguments"
+
+  ((${#SOURCE_REF[@]} >= COUNT + 1)) ||
+    die "incomplete internal ${CONTEXT} arguments"
+
+  # ShellCheck cannot trace assignments through nameref parameters.
+  # shellcheck disable=SC2034
+  RESULT_REF=("${SOURCE_REF[@]:1:COUNT}")
+  # shellcheck disable=SC2034
+  SOURCE_REF=("${SOURCE_REF[@]:COUNT + 1}")
+}
+
 function dispatch_watch_events {
-  local ARG_COUNT
-  local INDEX
   local EVENT_PATH
   local EVENT_PATH_BASE64
   local EVENT_PATHS_RESULT
   local ADOC_FILE
   local WATCH_PATH
+  local -a INTERNAL_ARGS
   local -a ADOC_FILES
-  local -a BUILD_ADOC_FILES
+  local -a BUILD_ADOC_FILES=()
   local -a WATCH_FILES
   local -a WATCH_DIRS
-  local -a GENERATOR_ARGS
-  local -A BUILD_FILES
+  local -a GENERATOR_CONFIG
+  local -A BUILD_FILES=()
 
-  ADOC_FILES=()
-  BUILD_ADOC_FILES=()
-  WATCH_FILES=()
-  WATCH_DIRS=()
-  GENERATOR_ARGS=()
-  BUILD_FILES=()
+  INTERNAL_ARGS=("${@}")
 
-  #
-  # Selected input documents.
-  #
-  ARG_COUNT="${1:-}"
+  consume_counted_array ADOC_FILES INTERNAL_ARGS "watch dispatch"
+  consume_counted_array WATCH_FILES INTERNAL_ARGS "watch dispatch"
+  consume_counted_array WATCH_DIRS INTERNAL_ARGS "watch dispatch"
+  consume_counted_array GENERATOR_CONFIG INTERNAL_ARGS "watch dispatch"
 
-  [[ "${ARG_COUNT}" =~ ^[0-9]+$ ]] ||
-    die "invalid internal watch dispatch arguments"
-
-  shift
-
-  for ((INDEX = 0; INDEX < ARG_COUNT; INDEX += 1)); do
-    (($# > 0)) ||
-      die "incomplete internal watch dispatch arguments"
-
-    ADOC_FILES+=("${1}")
-    shift
-  done
-
-  #
-  # Explicitly watched files.
-  #
-  ARG_COUNT="${1:-}"
-
-  [[ "${ARG_COUNT}" =~ ^[0-9]+$ ]] ||
-    die "invalid internal watch dispatch arguments"
-
-  shift
-
-  for ((INDEX = 0; INDEX < ARG_COUNT; INDEX += 1)); do
-    (($# > 0)) ||
-      die "incomplete internal watch dispatch arguments"
-
-    WATCH_FILES+=("${1}")
-    shift
-  done
-
-  #
-  # Explicitly watched directories.
-  #
-  ARG_COUNT="${1:-}"
-
-  [[ "${ARG_COUNT}" =~ ^[0-9]+$ ]] ||
-    die "invalid internal watch dispatch arguments"
-
-  shift
-
-  for ((INDEX = 0; INDEX < ARG_COUNT; INDEX += 1)); do
-    (($# > 0)) ||
-      die "incomplete internal watch dispatch arguments"
-
-    WATCH_DIRS+=("${1}")
-    shift
-  done
-
-  #
-  # Arguments forwarded to docgen-pdf.
-  #
-  ARG_COUNT="${1:-}"
-
-  [[ "${ARG_COUNT}" =~ ^[0-9]+$ ]] ||
-    die "invalid internal watch dispatch arguments"
-
-  shift
-
-  for ((INDEX = 0; INDEX < ARG_COUNT; INDEX += 1)); do
-    (($# > 0)) ||
-      die "incomplete internal watch dispatch arguments"
-
-    GENERATOR_ARGS+=("${1}")
-    shift
-  done
-
-  (($# == 0)) ||
+  ((${#INTERNAL_ARGS[@]} == 0)) ||
     die "unexpected internal watch dispatch arguments"
 
   #
@@ -557,7 +516,7 @@ function dispatch_watch_events {
 
   if ((${#BUILD_ADOC_FILES[@]} > 0)); then
     run_pdf_generator \
-      "${GENERATOR_ARGS[@]}" \
+      "${GENERATOR_CONFIG[@]}" \
       "${BUILD_ADOC_FILES[@]}"
   fi
 }
@@ -567,108 +526,48 @@ function run_pdf_generator {
 }
 
 function generate_documents {
-  local ARG_COUNT
-  local INDEX
   local INPUT_FILE
-  local RESOLVED_INPUT_FILE
   local INPUT_DIR
   local RELATIVE_INPUT_DIR
   local TEMP_GENERATED_ROOT
   local TEMP_DOCUMENT_DIR
-  local -a INPUT_FILES
+  local -a INTERNAL_ARGS
+  local -a INPUT_FILES=()
   local -a REQUESTED_INPUT_FILES
   local -a USER_ATTRIBUTES
 
-  INPUT_FILES=()
-  USER_ATTRIBUTES=()
-
-  (($# >= 6)) ||
+  (($# >= 5)) ||
     die "incomplete internal generator arguments"
 
-  WORK_DIR="${1}"
-  FAILURE_LEVEL="${2}"
-  SAFE_MODE="${3}"
-  DISCOVER_THEME="${4}"
-  REMOVE_TEMP_DIR="${5}"
-  ARG_COUNT="${6}"
-  shift 6
+  WORK_DIR="${PWD}"
+  FAILURE_LEVEL="${1}"
+  SAFE_MODE="${2}"
+  DISCOVER_THEME="${3}"
+  REMOVE_TEMP_DIR="${4}"
+  shift 4
+
+  INTERNAL_ARGS=("${@}")
+  consume_counted_array USER_ATTRIBUTES INTERNAL_ARGS "generator"
 
   [[ "${DISCOVER_THEME}" =~ ^[01]$ &&
-     "${REMOVE_TEMP_DIR}" =~ ^[01]$ &&
-     "${ARG_COUNT}" =~ ^[0-9]+$ ]] ||
+     "${REMOVE_TEMP_DIR}" =~ ^[01]$ ]] ||
     die "invalid internal generator arguments"
 
-  ((ARG_COUNT % 2 == 0)) ||
+  ((${#USER_ATTRIBUTES[@]} % 2 == 0)) ||
     die "invalid internal generator attribute arguments"
 
-  (($# >= ARG_COUNT + 1)) ||
+  ((${#INTERNAL_ARGS[@]} > 0)) ||
     die "incomplete internal generator arguments"
 
-  for ((INDEX = 0; INDEX < ARG_COUNT; INDEX += 1)); do
-    USER_ATTRIBUTES+=("${1}")
-    shift
-  done
-
-  REQUESTED_INPUT_FILES=("${@}")
-
-  [[ -d "${WORK_DIR}" ]] ||
-    die "working directory does not exist or is not a directory: ${WORK_DIR}"
-
-  WORK_DIR="$(realpath -- "${WORK_DIR}")"
-  cd -- "${WORK_DIR}"
-
-  : "${DOCGEN_ATTRIBUTE_RESOLVE:?DOCGEN_ATTRIBUTE_RESOLVE is not set}"
-  : "${DOCGEN_FEATURE_CHECK:?DOCGEN_FEATURE_CHECK is not set}"
-  : "${DOCGEN_ASCIIDOCTOR_GEMFILE:?DOCGEN_ASCIIDOCTOR_GEMFILE is not set}"
-  : "${DOCGEN_BUNDLE_COMMAND:?DOCGEN_BUNDLE_COMMAND is not set}"
-  : "${DOCGEN_RUBY_COMMAND:?DOCGEN_RUBY_COMMAND is not set}"
-
-  [[ -r "${DOCGEN_ATTRIBUTE_RESOLVE}" ]] ||
-    die "attribute resolver is not readable: ${DOCGEN_ATTRIBUTE_RESOLVE}"
-
-  [[ -r "${DOCGEN_FEATURE_CHECK}" ]] ||
-    die "feature check is not readable: ${DOCGEN_FEATURE_CHECK}"
-
-  [[ -r "${DOCGEN_ASCIIDOCTOR_GEMFILE}" ]] ||
-    die "Asciidoctor Gemfile is not readable: ${DOCGEN_ASCIIDOCTOR_GEMFILE}"
-
-  command -v "${DOCGEN_BUNDLE_COMMAND}" >/dev/null 2>&1 ||
-    die "bundle command is not executable: ${DOCGEN_BUNDLE_COMMAND}"
-
-  command -v "${DOCGEN_RUBY_COMMAND}" >/dev/null 2>&1 ||
-    die "Ruby command is not executable: ${DOCGEN_RUBY_COMMAND}"
-
-  command -v asciidoctor-pdf >/dev/null 2>&1 ||
-    die "asciidoctor-pdf command is not executable"
+  REQUESTED_INPUT_FILES=("${INTERNAL_ARGS[@]}")
 
   for INPUT_FILE in "${REQUESTED_INPUT_FILES[@]}"; do
-    [[ "${INPUT_FILE}" == *.adoc ]] ||
-      die "input must be an .adoc file: ${INPUT_FILE}"
-
-    if [[ ! -e "${INPUT_FILE}" ]]; then
+    # Selected files were fully validated by the public invocation. Only their
+    # current accessibility can change while the watcher is running.
+    if [[ ! -f "${INPUT_FILE}" || ! -r "${INPUT_FILE}" ]]; then
       warn_document_access "${INPUT_FILE}"
       continue
     fi
-
-    [[ -f "${INPUT_FILE}" ]] ||
-      die "input must be a regular .adoc file: ${INPUT_FILE}"
-
-    if [[ ! -r "${INPUT_FILE}" ]]; then
-      warn_document_access "${INPUT_FILE}"
-      continue
-    fi
-
-    if ! RESOLVED_INPUT_FILE="$(realpath -- "${INPUT_FILE}" 2>/dev/null)"; then
-      warn_document_access "${INPUT_FILE}"
-      continue
-    fi
-
-    INPUT_FILE="${RESOLVED_INPUT_FILE}"
-
-    require_below_work_dir \
-      "${WORK_DIR}" \
-      "${INPUT_FILE}" \
-      "input file"
 
     INPUT_FILES+=("${INPUT_FILE}")
   done
