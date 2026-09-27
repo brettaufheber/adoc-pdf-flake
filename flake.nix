@@ -15,31 +15,7 @@
       system: let
         pkgs = nixpkgs.legacyPackages.${system};
         lib = pkgs.lib;
-
-        readShellApplicationBody = path: let
-          isLeadingMetadataLine = line:
-            builtins.match "^[[:space:]]*$" line != null
-            || builtins.match "^[[:space:]]*#.*$" line != null
-            || builtins.match "^[[:space:]]*set([[:space:]].*)?$" line != null;
-
-          dropWhile = predicate: list:
-            if list == []
-            then []
-            else if predicate (builtins.head list)
-            then dropWhile predicate (builtins.tail list)
-            else list;
-        in
-          /*
-          writeShellApplication already adds a shebang and strict mode.
-          Remove those leading lines from the original script.
-          */
-          lib.concatStringsSep "\n" (
-            dropWhile isLeadingMetadataLine (
-              lib.splitString "\n" (
-                builtins.readFile path
-              )
-            )
-          );
+        projectLib = import ./nix/lib.nix { inherit lib; };
 
         fontPackages = with pkgs;
           [
@@ -158,14 +134,15 @@
             features.common.env
             // features.tools.env
             // {
-              DOCGEN_ATTRIBUTE_RESOLVE = "${./scripts/resolve-asciidoctor-attributes.rb}";
-              DOCGEN_FEATURE_CHECK = "${./scripts/check-asciidoctor-features.jq}";
+              DOCGEN_PDF_GENERATE = "./scripts/docgen-generate-pdf.sh";
+              DOCGEN_ATTRIBUTE_RESOLVE = "./scripts/resolve-asciidoctor-attributes.rb";
+              DOCGEN_FEATURE_CHECK = "./scripts/check-asciidoctor-features.jq";
               DOCGEN_ASCIIDOCTOR_GEMFILE = "${asciidoctorToolchain.confFiles}/Gemfile";
               DOCGEN_BUNDLE_COMMAND = "${asciidoctorToolchain}/bin/bundle";
               DOCGEN_RUBY_COMMAND = "${asciidoctorToolchain.wrappedRuby}/bin/ruby";
             };
           inheritPath = false;
-          text = readShellApplicationBody ./scripts/adoc-pdf.sh;
+          text = projectLib.readShellApplicationBody ./scripts/docgen.sh;
         };
 
         updateGemsApp = pkgs.writeShellApplication {
@@ -175,7 +152,7 @@
             ++ features.build.packages;
           runtimeEnv = features.common.env // features.build.env;
           inheritPath = false;
-          text = readShellApplicationBody ./scripts/update-gems.sh;
+          text = projectLib.readShellApplicationBody ./scripts/update-gems.sh;
         };
       in {
         packages = let

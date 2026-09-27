@@ -3,14 +3,17 @@ set -euo pipefail
 
 function main {
   local OPTS
-  local INPUT_PATH
+  local INPUT_ROOT_OPTION
   local INPUT_ROOT
+  local INPUT_FILE
+  local INPUT_DIR
   local RELATIVE_INPUT_PATH
-  local ADOC_FILE
-  local ADOC_DIR
-  local ADOC_LIST
   local TEMP_GENERATED_ROOT
+  local -a INPUT_FILES
   local -a USER_ATTRIBUTES
+
+  INPUT_FILES=()
+  USER_ATTRIBUTES=()
 
   APP_NAME="${0##*/}"
   FAILURE_LEVEL="WARN"
@@ -19,7 +22,7 @@ function main {
   DISCOVER_THEME=1
   REMOVE_TEMP_DIR=1
   IMAGES_DIR="${PWD}/images"
-  USER_ATTRIBUTES=()
+  INPUT_ROOT_OPTION=""
 
   : "${DOCGEN_ATTRIBUTE_RESOLVE:?DOCGEN_ATTRIBUTE_RESOLVE is not set}"
   : "${DOCGEN_FEATURE_CHECK:?DOCGEN_FEATURE_CHECK is not set}"
@@ -35,6 +38,7 @@ function main {
         printf '%s' \
           'failure-level:,' \
           'safe-mode:,' \
+          'input-root:,' \
           'images-dir:,' \
           'attribute:,' \
           'no-image-collection,' \
@@ -55,6 +59,10 @@ function main {
         ;;
       -s|--safe-mode)
         SAFE_MODE="${2}"
+        shift 2
+        ;;
+      --input-root)
+        INPUT_ROOT_OPTION="${2}"
         shift 2
         ;;
       -i|--images-dir)
@@ -91,67 +99,70 @@ function main {
     esac
   done
 
-  if (($# > 1)); then
-    die "only one input path may be specified"
+  if (($# == 0)); then
+    die "at least one .adoc input file must be specified"
   fi
+
+  if [[ -n "${INPUT_ROOT_OPTION}" ]]; then
+    if [[ -d "${INPUT_ROOT_OPTION}" ]]; then
+      die "input root does not exist or is not a directory: ${INPUT_ROOT_OPTION}"
+    fi
+    INPUT_ROOT_OPTION="$(realpath -- "${INPUT_ROOT_OPTION}")"
+  fi
+
+  for INPUT_FILE in "${@}"; do
+    [[ -f "${INPUT_FILE}" && "${INPUT_FILE}" == *.adoc ]] ||
+      die "input must be an .adoc file: ${INPUT_FILE}"
+
+    INPUT_FILE="$(realpath -- "${INPUT_FILE}")"
+
+    if [[ -n "${INPUT_ROOT_OPTION}" && "${INPUT_FILE}" != "${INPUT_ROOT_OPTION}/"* ]]; then
+      die "input file is outside input root: ${INPUT_FILE}"
+    fi
+
+    INPUT_FILES+=("${INPUT_FILE}")
+  done
 
   TEMP_DIR="$(mktemp -d -t asciidoctor-assets.XXXXXXXX)"
   trap cleanup EXIT
 
   TEMP_GENERATED_ROOT="${TEMP_DIR}/generated"
-  ADOC_LIST="${TEMP_DIR}/adoc-files"
 
   mkdir -p -- "${TEMP_GENERATED_ROOT}"
 
-  INPUT_PATH="${1:-${PWD}}"
+  for INPUT_FILE in "${INPUT_FILES[@]}"; do
+    INPUT_DIR="$(dirname -- "${INPUT_FILE}")"
 
-  [[ -e "${INPUT_PATH}" ]] ||
-    die "input path does not exist: ${INPUT_PATH}"
-
-  INPUT_PATH="$(realpath -- "${INPUT_PATH}")"
-
-  if [[ -d "${INPUT_PATH}" ]]; then
-    INPUT_ROOT="${INPUT_PATH}"
-  elif [[ -f "${INPUT_PATH}" && "${INPUT_PATH}" == *.adoc ]]; then
-    INPUT_ROOT="$(dirname -- "${INPUT_PATH}")"
-  else
-    die "input path must be a directory or an .adoc file: ${INPUT_PATH}"
-  fi
-
-  if [[ -d "${INPUT_PATH}" ]]; then
-    find "${INPUT_PATH}" \
-      \( -type d -path '*/.*' -prune \) -o \
-      \( -type f -name '*.adoc' ! -path '*/.*' -print0 \) \
-      > "${ADOC_LIST}"
-  else
-    printf '%s\0' "${INPUT_PATH}" > "${ADOC_LIST}"
-  fi
-
-  while IFS= read -r -d '' ADOC_FILE; do
-    ADOC_DIR="$(dirname -- "${ADOC_FILE}")"
+    if [[ -n "${INPUT_ROOT_OPTION}" ]]; then
+      INPUT_ROOT="${INPUT_ROOT_OPTION}"
+    else
+      INPUT_ROOT="${INPUT_DIR}"
+    fi
 
     RELATIVE_INPUT_PATH="$(
       realpath \
         --relative-to="${INPUT_ROOT}" \
-        -- "${ADOC_DIR}"
+        -- "${INPUT_DIR}"
     )"
 
     generate_pdf \
       "${TEMP_GENERATED_ROOT}/${RELATIVE_INPUT_PATH}" \
-      "${ADOC_FILE}" \
+      "${INPUT_FILE}" \
       "${USER_ATTRIBUTES[@]}"
-  done < "${ADOC_LIST}"
+  done
 }
 
 function generate_pdf {
   local TEMP_GEN_DIR
   local INPUT_FILE
   local OUTPUT_FILE
+  local TEMP_OUTPUT_FILE
   local -a ADOCTOR_ARGS
 
   TEMP_GEN_DIR="${1}"
   INPUT_FILE="${2}"
   OUTPUT_FILE="${INPUT_FILE%.adoc}.pdf"
+  TEMP_OUTPUT_FILE="${TEMP_GEN_DIR}/.docgen-output.pdf"
   ADOCTOR_ARGS=()
 
   mkdir -p -- "${TEMP_GEN_DIR}"
@@ -164,8 +175,10 @@ function generate_pdf {
     "--failure-level=${FAILURE_LEVEL}" \
     "--safe-mode=${SAFE_MODE}" \
     "${ADOCTOR_ARGS[@]}" \
-    -o "${OUTPUT_FILE}" \
+    -o "${TEMP_OUTPUT_FILE}" \
     "${INPUT_FILE}"
+
+  mv -- "${TEMP_OUTPUT_FILE}" "${OUTPUT_FILE}"
 }
 
 function prepare_adoctor_args {
@@ -321,10 +334,11 @@ function die {
 function usage {
   cat <<_EOI_
 Usage:
-  ${APP_NAME} [OPTIONS] [INPUT_PATH]
+  ${APP_NAME} [OPTIONS] ADOC_FILE [ADOC_FILE ...]
 
-INPUT_PATH may be a directory or one .adoc file.
-If omitted, the current working directory is used.
+Only .adoc files are accepted as input.
+If --input-root is omitted, each document uses its own directory as input root.
+The Asciidoctor base directory is not changed.
 
 Options:
   -f, --failure-level LEVEL
@@ -336,6 +350,12 @@ Options:
   -i, --images-dir DIR
       Static image directory. Default: ./images
 
+      --input-root DIR
+      Root used by docgen for wrapper-specific discovery, such as
+      themes/default-theme.yml. The root must contain every input file.
+
+      This does not set Asciidoctor's --base-dir.
+
   -a, --attribute ATTRIBUTE
       Pass an attribute to asciidoctor-pdf. Repeatable.
 
@@ -343,23 +363,14 @@ Options:
       Do not collect images in a temporary directory.
 
       --no-theme-discovery
-          Do not automatically use INPUT_ROOT/themes/default-theme.yml as theme file.
+      Do not automatically use INPUT_ROOT/themes/default-theme.yml
+      as theme file.
 
       --keep-temp
       Keep the temporary directory.
 
   -h, --help
       Show this help.
-
-Extension detection:
-  asciidoctor-bibtex
-      Enabled by docgen-use-bibtex or any resolved bibtex-* attribute.
-
-  asciidoctor-mathematical
-      Enabled by docgen-use-mathematical or a supported stem value.
-
-  asciidoctor-kroki
-      Enabled by docgen-use-kroki or any resolved kroki-* attribute.
 _EOI_
 }
 
