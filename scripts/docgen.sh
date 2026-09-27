@@ -336,6 +336,7 @@ function start_watcher {
 
 function validate_runtime_environment {
   : "${DOCGEN_ATTRIBUTE_RESOLVE:?DOCGEN_ATTRIBUTE_RESOLVE is not set}"
+  : "${DOCGEN_PDF_LINE_WRAP:?DOCGEN_PDF_LINE_WRAP is not set}"
   : "${DOCGEN_FEATURE_CHECK:?DOCGEN_FEATURE_CHECK is not set}"
   : "${DOCGEN_ASCIIDOCTOR_GEMFILE:?DOCGEN_ASCIIDOCTOR_GEMFILE is not set}"
   : "${DOCGEN_BUNDLE_COMMAND:?DOCGEN_BUNDLE_COMMAND is not set}"
@@ -346,6 +347,9 @@ function validate_runtime_environment {
 
   [[ -r "${DOCGEN_ATTRIBUTE_RESOLVE}" ]] ||
     die "attribute resolver is not readable: ${DOCGEN_ATTRIBUTE_RESOLVE}"
+
+  [[ -r "${DOCGEN_PDF_LINE_WRAP}" ]] ||
+    die "line wrap extension is not readable: ${DOCGEN_PDF_LINE_WRAP}"
 
   [[ -r "${DOCGEN_FEATURE_CHECK}" ]] ||
     die "feature check is not readable: ${DOCGEN_FEATURE_CHECK}"
@@ -705,20 +709,13 @@ function prepare_asciidoctor_args {
       <<< "${ATTRIBUTES_JSON}"
   )"
 
-  DOCGEN_USE_BIBTEX="$(
-    jq -r '.bibtex | if . then 1 else 0 end' \
-      <<< "${FEATURES_JSON}"
-  )"
+  DOCGEN_USE_BIBTEX="$(jq -r '.bibtex | if . then 1 else 0 end' <<< "${FEATURES_JSON}")"
+  DOCGEN_USE_MATHEMATICAL="$(jq -r '.mathematical | if . then 1 else 0 end' <<< "${FEATURES_JSON}")"
+  DOCGEN_USE_KROKI="$(jq -r '.kroki | if . then 1 else 0 end' <<< "${FEATURES_JSON}")"
 
-  DOCGEN_USE_MATHEMATICAL="$(
-    jq -r '.mathematical | if . then 1 else 0 end' \
-      <<< "${FEATURES_JSON}"
-  )"
-
-  DOCGEN_USE_KROKI="$(
-    jq -r '.kroki | if . then 1 else 0 end' \
-      <<< "${FEATURES_JSON}"
-  )"
+  RESULT_ARGS+=(
+    -r "${DOCGEN_PDF_LINE_WRAP}"
+  )
 
   if (( DOCGEN_USE_BIBTEX )); then
     RESULT_ARGS+=(

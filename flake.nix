@@ -135,6 +135,7 @@
             // features.tools.env
             // {
               DOCGEN_ATTRIBUTE_RESOLVE = "${./scripts/resolve-asciidoctor-attributes.rb}";
+              DOCGEN_PDF_LINE_WRAP = "${./scripts/docgen-pdf-line-wrap.rb}";
               DOCGEN_FEATURE_CHECK = "${./scripts/check-asciidoctor-features.jq}";
               DOCGEN_ASCIIDOCTOR_GEMFILE = "${asciidoctorToolchain.confFiles}/Gemfile";
               DOCGEN_BUNDLE_COMMAND = "${asciidoctorToolchain.wrappedRuby}/bin/bundle";
