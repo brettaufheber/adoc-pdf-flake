@@ -18,10 +18,8 @@ function main {
   APP_NAME="${0##*/}"
   FAILURE_LEVEL="WARN"
   SAFE_MODE="unsafe"
-  COLLECT_IMAGES=1
   DISCOVER_THEME=1
   REMOVE_TEMP_DIR=1
-  IMAGES_DIR="${PWD}/images"
   INPUT_ROOT_OPTION=""
 
   : "${DOCGEN_ATTRIBUTE_RESOLVE:?DOCGEN_ATTRIBUTE_RESOLVE is not set}"
@@ -33,15 +31,13 @@ function main {
   OPTS="$(
     getopt \
       --name "${APP_NAME}" \
-      --options 'f:s:i:a:h' \
+      --options 'f:s:a:h' \
       --longoptions "$(
         printf '%s' \
           'failure-level:,' \
           'safe-mode:,' \
           'input-root:,' \
-          'images-dir:,' \
           'attribute:,' \
-          'no-image-collection,' \
           'no-theme-discovery,' \
           'keep-temp,' \
           'help'
@@ -65,17 +61,9 @@ function main {
         INPUT_ROOT_OPTION="${2}"
         shift 2
         ;;
-      -i|--images-dir)
-        IMAGES_DIR="${2}"
-        shift 2
-        ;;
       -a|--attribute)
         USER_ATTRIBUTES+=(-a "${2}")
         shift 2
-        ;;
-      --no-image-collection)
-        COLLECT_IMAGES=0
-        shift
         ;;
       --no-theme-discovery)
         DISCOVER_THEME=0
@@ -185,11 +173,8 @@ function generate_pdf {
 function prepare_adoctor_args {
   local TEMP_GEN_DIR
   local INPUT_FILE
-  local INPUT_DIR
   local ATTRIBUTES_JSON
   local FEATURES_JSON
-  local RESOLVED_IMAGES_DIR
-  local SOURCE_IMAGES_DIR
   local DOCGEN_USE_BIBTEX
   local DOCGEN_USE_MATHEMATICAL
   local DOCGEN_USE_KROKI
@@ -272,40 +257,12 @@ function prepare_adoctor_args {
     )
   fi
 
-  if (( COLLECT_IMAGES )); then
-    INPUT_DIR="$(dirname -- "${INPUT_FILE}")"
-
-    if [[ -n "${IMAGES_DIR}" ]]; then
-      SOURCE_IMAGES_DIR="${IMAGES_DIR}"
-    else
-      RESOLVED_IMAGES_DIR="$(
-        jq -r '.imagesdir // ""' <<< "${ATTRIBUTES_JSON}"
-      )"
-
-      if [[ -z "${RESOLVED_IMAGES_DIR}" ]]; then
-        SOURCE_IMAGES_DIR="${INPUT_DIR}"
-      elif [[ "${RESOLVED_IMAGES_DIR}" == /* ]]; then
-        SOURCE_IMAGES_DIR="${RESOLVED_IMAGES_DIR}"
-      else
-        SOURCE_IMAGES_DIR="${INPUT_DIR}/${RESOLVED_IMAGES_DIR}"
-      fi
-    fi
-
-    if [[ -d "${SOURCE_IMAGES_DIR}" ]]; then
-      cp -R -- "${SOURCE_IMAGES_DIR}/." "${TEMP_GEN_DIR}/"
-    fi
-  fi
-
   # explicit user attributes override all soft wrapper defaults
   ADOCTOR_ARGS+=("${@}")
 
-  # internal image collection requires Kroki and the PDF converter to use exactly the same directory
-  if (( COLLECT_IMAGES )); then
-    ADOCTOR_ARGS+=(
-      -a "imagesoutdir=${TEMP_GEN_DIR}"
-      -a "imagesdir=${TEMP_GEN_DIR}"
-    )
-  fi
+  ADOCTOR_ARGS+=(
+    -a "imagesoutdir=${TEMP_GEN_DIR}"
+  )
 }
 
 # shellcheck disable=SC2317,SC2329
@@ -348,9 +305,6 @@ Options:
   -s, --safe-mode MODE
       Safe mode. Default: unsafe
 
-  -i, --images-dir DIR
-      Static image directory. Default: ./images
-
       --input-root DIR
       Root used by docgen for wrapper-specific discovery, such as
       themes/default-theme.yml. The root must contain every input file.
@@ -359,9 +313,6 @@ Options:
 
   -a, --attribute ATTRIBUTE
       Pass an attribute to asciidoctor-pdf. Repeatable.
-
-      --no-image-collection
-      Do not collect images in a temporary directory.
 
       --no-theme-discovery
       Do not automatically use INPUT_ROOT/themes/default-theme.yml

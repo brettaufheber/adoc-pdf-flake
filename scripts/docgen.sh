@@ -52,17 +52,15 @@ function main {
   OPTS="$(
     getopt \
       --name "${APP_NAME}" \
-      --options 'C:f:s:i:a:h' \
+      --options 'C:f:s:a:h' \
       --longoptions "$(
         printf '%s' \
           'directory:,' \
           'failure-level:,' \
           'safe-mode:,' \
-          'images-dir:,' \
           'attribute:,' \
           'watch,' \
           'watch-path:,' \
-          'no-image-collection,' \
           'no-theme-discovery,' \
           'keep-temp,' \
           'help'
@@ -86,10 +84,6 @@ function main {
         GENERATOR_ARGS+=(--safe-mode "${2}")
         shift 2
         ;;
-      -i|--images-dir)
-        GENERATOR_ARGS+=(--images-dir "${2}")
-        shift 2
-        ;;
       -a|--attribute)
         GENERATOR_ARGS+=(--attribute "${2}")
         shift 2
@@ -101,10 +95,6 @@ function main {
       --watch-path)
         WATCH_PATHS+=("${2}")
         shift 2
-        ;;
-      --no-image-collection)
-        GENERATOR_ARGS+=(--no-image-collection)
-        shift
         ;;
       --no-theme-discovery)
         GENERATOR_ARGS+=(--no-theme-discovery)
@@ -609,10 +599,6 @@ Options:
   -s, --safe-mode MODE
       Safe mode. Default: unsafe
 
-  -i, --images-dir DIR
-      Static image directory. Relative paths are resolved from the working
-      directory.
-
   -a, --attribute ATTRIBUTE
       Pass an attribute to asciidoctor-pdf. Repeatable.
 
@@ -628,9 +614,6 @@ Options:
 
       A change to an additional watch path causes all selected documents to be
       rebuilt.
-
-      --no-image-collection
-      Do not collect images in a temporary directory.
 
       --no-theme-discovery
       Do not automatically use WORK_DIR/themes/default-theme.yml as theme file.
