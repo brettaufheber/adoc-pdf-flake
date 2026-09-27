@@ -3,27 +3,34 @@ set -euo pipefail
 
 function main {
   local OPTS
+  local WORK_DIR_OPTION
+  local WORK_DIR
   local INPUT_PATH
-  local INPUT_ROOT
+  local RESOLVED_INPUT_PATH
   local ADOC_FILE
   local ADOC_FILE_BASE64
   local ADOC_FILES_RESULT
   local WATCH_PATH
   local RESOLVED_WATCH_PATH
   local INITIAL_BUILD_FAILED
+  local -a INPUT_PATHS
+  local -a RESOLVED_INPUT_PATHS
   local -a ADOC_FILES
   local -a WATCH_PATHS
-  local -a GENERATOR_ARGS
-  local -a WATCH_ARGS
   local -a RESOLVED_WATCH_FILES
   local -a RESOLVED_WATCH_DIRS
+  local -a GENERATOR_ARGS
+  local -a WATCH_ARGS
 
+  WORK_DIR_OPTION="."
+  INPUT_PATHS=()
+  RESOLVED_INPUT_PATHS=()
   ADOC_FILES=()
   WATCH_PATHS=()
-  GENERATOR_ARGS=()
-  WATCH_ARGS=()
   RESOLVED_WATCH_FILES=()
   RESOLVED_WATCH_DIRS=()
+  GENERATOR_ARGS=()
+  WATCH_ARGS=()
 
   APP_NAME="${0##*/}"
   WATCH_MODE=0
@@ -31,11 +38,11 @@ function main {
   : "${DOCGEN_COMMAND:?DOCGEN_COMMAND is not set}"
   : "${DOCGEN_PDF_GENERATOR:?DOCGEN_PDF_GENERATOR is not set}"
 
+  [[ -x "${DOCGEN_PDF_GENERATOR}" ]] ||
+    die "PDF generator is not executable: ${DOCGEN_PDF_GENERATOR}"
+
   #
   # Internal mode used by watchexec.
-  #
-  # Watchexec owns this process and provides one debounced event batch
-  # as JSON objects on stdin.
   #
   if [[ "${DOCGEN_WATCH_DISPATCH:-0}" == 1 ]]; then
     dispatch_watch_events "${@}"
@@ -45,9 +52,10 @@ function main {
   OPTS="$(
     getopt \
       --name "${APP_NAME}" \
-      --options 'f:s:i:a:h' \
+      --options 'C:f:s:i:a:h' \
       --longoptions "$(
         printf '%s' \
+          'directory:,' \
           'failure-level:,' \
           'safe-mode:,' \
           'images-dir:,' \
@@ -66,6 +74,10 @@ function main {
 
   while true; do
     case "${1}" in
+      -C|--directory)
+        WORK_DIR_OPTION="${2}"
+        shift 2
+        ;;
       -f|--failure-level)
         GENERATOR_ARGS+=(--failure-level "${2}")
         shift 2
@@ -116,63 +128,128 @@ function main {
     esac
   done
 
-  if (($# > 1)); then
-    die "only one input path may be specified"
-  fi
-
   if ((${#WATCH_PATHS[@]} > 0)) && (( ! WATCH_MODE )); then
     die "--watch-path requires --watch"
   fi
 
-  INPUT_PATH="${1:-${PWD}}"
+  [[ -d "${WORK_DIR_OPTION}" ]] ||
+    die "working directory does not exist or is not a directory: ${WORK_DIR_OPTION}"
 
-  [[ -e "${INPUT_PATH}" ]] ||
-    die "input path does not exist: ${INPUT_PATH}"
+  WORK_DIR="$(realpath -- "${WORK_DIR_OPTION}")"
 
-  INPUT_PATH="$(realpath -- "${INPUT_PATH}")"
+  #
+  # From this point on all relative paths are interpreted relative to
+  # the selected working directory, similar to "git -C DIR".
+  #
+  cd -- "${WORK_DIR}"
 
-  if [[ -d "${INPUT_PATH}" ]]; then
-    INPUT_ROOT="${INPUT_PATH}"
-  elif [[ -f "${INPUT_PATH}" && "${INPUT_PATH}" == *.adoc ]]; then
-    INPUT_ROOT="$(dirname -- "${INPUT_PATH}")"
+  if (($# == 0)); then
+    INPUT_PATHS=("${PWD}")
   else
-    die "input path must be a directory or an .adoc file: ${INPUT_PATH}"
+    INPUT_PATHS=("${@}")
   fi
 
+  #
+  # Validate and resolve all input selections.
+  #
+  for INPUT_PATH in "${INPUT_PATHS[@]}"; do
+    [[ -e "${INPUT_PATH}" ]] ||
+      die "input path does not exist: ${INPUT_PATH}"
+
+    RESOLVED_INPUT_PATH="$(realpath -- "${INPUT_PATH}")"
+
+    require_below_work_dir \
+      "${WORK_DIR}" \
+      "${RESOLVED_INPUT_PATH}" \
+      "input path"
+
+    require_non_hidden_path \
+      "${WORK_DIR}" \
+      "${RESOLVED_INPUT_PATH}" \
+      "input path"
+
+    if [[ -d "${RESOLVED_INPUT_PATH}" ]]; then
+      :
+    elif [[ -f "${RESOLVED_INPUT_PATH}" &&
+            "${RESOLVED_INPUT_PATH}" == *.adoc ]]
+    then
+      :
+    else
+      die "input path must be a directory or an .adoc file: ${INPUT_PATH}"
+    fi
+
+    RESOLVED_INPUT_PATHS+=("${RESOLVED_INPUT_PATH}")
+  done
+
+  #
+  # Resolve all selected documents.
+  #
+  # find emits NUL-separated paths so whitespace and newlines in path
+  # names do not delimit entries. jq turns them into line-safe Base64
+  # values and also removes duplicates caused by overlapping selections.
+  #
   ADOC_FILES_RESULT="$(
-    find "${INPUT_PATH}" \
-      \( -type d -path '*/.*' -prune \) -o \
-      \( -type f -name '*.adoc' ! -path '*/.*' -print0 \) |
-        jq -Rsr 'split("\u0000")[:-1][] | @base64'
+    find "${RESOLVED_INPUT_PATHS[@]}" \
+      \( -type d -name '.*' -prune \) -o \
+      \( -type f -name '*.adoc' ! -name '.*' -print0 \) |
+        jq -Rsr 'split("\u0000")[:-1] | unique[] | @base64'
   )"
 
   while IFS= read -r ADOC_FILE_BASE64; do
     [[ -n "${ADOC_FILE_BASE64}" ]] || continue
-    ADOC_FILE="$(printf '%s' "${ADOC_FILE_BASE64}" | base64 --decode)"
+    ADOC_FILE="$(printf '%s' "${ADOC_FILE_BASE64}" | base64 --decode && printf '\034')"
+    ADOC_FILE="${ADOC_FILE%$'\034'}"
+    ADOC_FILES+=("${ADOC_FILE}")
   done <<< "${ADOC_FILES_RESULT}"
 
   if ((${#ADOC_FILES[@]} == 0)); then
-    die "no .adoc files found below input path: ${INPUT_PATH}"
+    die "no .adoc files found in selected input paths"
   fi
 
-  GENERATOR_ARGS+=(--input-root "${INPUT_ROOT}")
+  #
+  # The workspace root is also the wrapper-specific input root used by
+  # docgen-pdf, e.g. for themes/default-theme.yml.
+  #
+  # This does not modify Asciidoctor's base directory.
+  #
+  GENERATOR_ARGS+=(--input-root "${WORK_DIR}")
 
-  # normal generation does not need watchexec or a dispatcher
+  #
+  # Normal generation: let the PDF generator process the selected
+  # documents directly.
+  #
   if (( ! WATCH_MODE )); then
     exec "${DOCGEN_PDF_GENERATOR}" \
       "${GENERATOR_ARGS[@]}" \
       "${ADOC_FILES[@]}"
   fi
 
+  : "${DOCGEN_COMMAND:?DOCGEN_COMMAND is not set}"
+
+  [[ -x "${DOCGEN_COMMAND}" ]] ||
+    die "docgen command is not executable: ${DOCGEN_COMMAND}"
+
   #
-  # Resolve and classify additional watch paths once. Their type must
-  # remain stable even if a later filesystem event removes the path.
+  # Validate, resolve, and classify explicitly requested watch paths.
+  #
+  # Their type is remembered now so that a later removal event does not
+  # make the dispatcher dependent on the path still existing.
   #
   for WATCH_PATH in "${WATCH_PATHS[@]}"; do
     [[ -e "${WATCH_PATH}" ]] ||
       die "watch path does not exist: ${WATCH_PATH}"
 
     RESOLVED_WATCH_PATH="$(realpath -- "${WATCH_PATH}")"
+
+    require_below_work_dir \
+      "${WORK_DIR}" \
+      "${RESOLVED_WATCH_PATH}" \
+      "watch path"
+
+    require_non_hidden_path \
+      "${WORK_DIR}" \
+      "${RESOLVED_WATCH_PATH}" \
+      "watch path"
 
     if [[ -d "${RESOLVED_WATCH_PATH}" ]]; then
       RESOLVED_WATCH_DIRS+=("${RESOLVED_WATCH_PATH}")
@@ -182,9 +259,10 @@ function main {
   done
 
   #
-  # In preview mode each document is generated independently. A broken
-  # document therefore does not prevent the other documents from being
-  # generated.
+  # Initial preview build.
+  #
+  # Build each document independently so a temporarily invalid document
+  # does not prevent the remaining previews from being generated.
   #
   INITIAL_BUILD_FAILED=0
 
@@ -198,15 +276,21 @@ function main {
   done
 
   if (( INITIAL_BUILD_FAILED )); then
-    printf 'One or more initial preview builds failed; continuing to watch.\n' >&2
+    printf \
+      'One or more initial preview builds failed; continuing to watch.\n' \
+      >&2
   fi
 
-  printf 'Watching %d document(s). Press Ctrl-C to stop.\n' \
-    "${#ADOC_FILES[@]}" >&2
+  printf 'Watching %d document(s) below %s. Press Ctrl-C to stop.\n' \
+    "${#ADOC_FILES[@]}" \
+    "${WORK_DIR}" >&2
 
   #
-  # A single watchexec instance watches every selected input document
-  # and every explicitly requested additional path.
+  # One watchexec instance watches all concrete input documents.
+  #
+  # Input directories themselves are intentionally not watched. The set
+  # of selected documents therefore remains fixed until docgen is
+  # restarted.
   #
   for ADOC_FILE in "${ADOC_FILES[@]}"; do
     WATCH_ARGS+=(
@@ -227,26 +311,22 @@ function main {
   done
 
   #
-  # The internal dispatcher receives a frozen description of:
+  # docgen is replaced by watchexec. Bash therefore does not supervise
+  # any long-running child processes.
   #
-  #   - selected input documents
-  #   - additional watched files
-  #   - additional watched directories
-  #   - arguments for docgen-pdf
-  #
-  # Counts delimit the arrays without introducing separator characters,
-  # so argument values may themselves contain whitespace or newlines.
+  # Watchexec starts DOCGEN_COMMAND in internal dispatch mode for each
+  # debounced event batch and supplies that batch as JSON on stdin.
   #
   exec watchexec \
     --postpone \
-    --debounce 250ms \
-    --on-busy-update queue \
+    --debounce=250ms \
+    --on-busy-update=queue \
     --ignore-nothing \
     --ignore '**/.*' \
     --ignore '**/.*/**' \
     --ignore '**/*.pdf' \
     --emit-events-to=json-stdio \
-    --shell none \
+    --shell=none \
     "${WATCH_ARGS[@]}" \
     --env DOCGEN_WATCH_DISPATCH=1 \
     -- \
@@ -259,6 +339,46 @@ function main {
     "${RESOLVED_WATCH_DIRS[@]}" \
     "${#GENERATOR_ARGS[@]}" \
     "${GENERATOR_ARGS[@]}"
+}
+
+function require_below_work_dir {
+  local WORK_DIR="${1}"
+  local PATH_TO_CHECK="${2}"
+  local PATH_DESCRIPTION="${3}"
+  local RELATIVE_PATH
+
+  RELATIVE_PATH="$(
+    realpath \
+      --relative-to="${WORK_DIR}" \
+      -- "${PATH_TO_CHECK}"
+  )"
+
+  case "${RELATIVE_PATH}" in
+    ..|../*)
+      die "${PATH_DESCRIPTION} is outside working directory: ${PATH_TO_CHECK}"
+      ;;
+  esac
+}
+
+function require_non_hidden_path {
+  local WORK_DIR="${1}"
+  local PATH_TO_CHECK="${2}"
+  local PATH_DESCRIPTION="${3}"
+  local RELATIVE_PATH
+
+  RELATIVE_PATH="$(
+    realpath \
+      --relative-to="${WORK_DIR}" \
+      -- "${PATH_TO_CHECK}"
+  )"
+
+  if [[ "${RELATIVE_PATH}" != "." &&
+        ( "${RELATIVE_PATH}" == .* ||
+          "${RELATIVE_PATH}" == */.* ) ]]
+  then
+    die \
+      "${PATH_DESCRIPTION} contains a hidden path component: ${PATH_TO_CHECK}"
+  fi
 }
 
 function dispatch_watch_events {
@@ -284,7 +404,7 @@ function dispatch_watch_events {
   BUILD_FILES=()
 
   #
-  # Read selected input documents.
+  # Selected input documents.
   #
   ARG_COUNT="${1:-}"
 
@@ -302,7 +422,7 @@ function dispatch_watch_events {
   done
 
   #
-  # Read explicitly watched files.
+  # Explicitly watched files.
   #
   ARG_COUNT="${1:-}"
 
@@ -320,7 +440,7 @@ function dispatch_watch_events {
   done
 
   #
-  # Read explicitly watched directories.
+  # Explicitly watched directories.
   #
   ARG_COUNT="${1:-}"
 
@@ -338,7 +458,7 @@ function dispatch_watch_events {
   done
 
   #
-  # Read generator arguments.
+  # Arguments forwarded to docgen-pdf.
   #
   ARG_COUNT="${1:-}"
 
@@ -359,18 +479,19 @@ function dispatch_watch_events {
     die "unexpected internal watch dispatch arguments"
 
   #
-  # Watchexec writes one JSON object per event to stdin and closes stdin
-  # afterwards. Extract all absolute filesystem paths from this debounced
-  # event batch, deduplicate them, and encode them for line-safe Bash
-  # processing.
+  # Watchexec emits one JSON object per event on stdin.
+  #
+  # Extract and deduplicate all absolute filesystem paths from the
+  # complete debounced event batch.
   #
   EVENT_PATHS_RESULT="$(
-    jq -rsc '
+    jq -rs -r '
       [
         .[]
         | .tags[]?
         | select(.kind == "path")
-        | .absolute
+        | .absolute?
+        | select(type == "string")
       ]
       | unique[]
       | @base64
@@ -391,8 +512,8 @@ function dispatch_watch_events {
     EVENT_PATH="${EVENT_PATH%$'\034'}"
 
     #
-    # An explicitly watched file is an unknown dependency. Its change
-    # therefore rebuilds every selected document.
+    # An explicitly watched file represents an unknown dependency.
+    # Therefore every selected document must be rebuilt.
     #
     for WATCH_PATH in "${WATCH_FILES[@]}"; do
       if [[ "${EVENT_PATH}" == "${WATCH_PATH}" ]]; then
@@ -404,8 +525,8 @@ function dispatch_watch_events {
     (( BUILD_ALL )) && continue
 
     #
-    # The same applies to everything below an explicitly watched
-    # directory, including the directory itself.
+    # The same applies to the directory itself and every path below an
+    # explicitly watched directory.
     #
     for WATCH_PATH in "${WATCH_DIRS[@]}"; do
       if [[ "${EVENT_PATH}" == "${WATCH_PATH}" ||
@@ -419,8 +540,8 @@ function dispatch_watch_events {
     (( BUILD_ALL )) && continue
 
     #
-    # Otherwise only a directly changed selected input document needs
-    # to be rebuilt.
+    # Otherwise, an event for a concrete selected input document only
+    # rebuilds that document.
     #
     for ADOC_FILE in "${ADOC_FILES[@]}"; do
       if [[ "${EVENT_PATH}" == "${ADOC_FILE}" ]]; then
@@ -466,12 +587,22 @@ function die {
 function usage {
   cat <<_EOI_
 Usage:
-  ${APP_NAME} [OPTIONS] [INPUT_PATH]
+  ${APP_NAME} [OPTIONS] [INPUT_PATH ...]
 
-INPUT_PATH may be a directory or one .adoc file.
-If omitted, the current working directory is used.
+INPUT_PATH may be an .adoc file or a directory. Directories are searched
+recursively for non-hidden .adoc files. Multiple input paths may be specified.
+Overlapping selections are deduplicated.
+
+If no input path is specified, the working directory is used.
+
+All input paths and additional watch paths must be located below the working
+directory after resolving symbolic links.
 
 Options:
+  -C, --directory DIR
+      Change to DIR before resolving input paths, watch paths, and other
+      relative paths. Default: current working directory.
+
   -f, --failure-level LEVEL
       Failure level. Default: WARN
 
@@ -479,7 +610,8 @@ Options:
       Safe mode. Default: unsafe
 
   -i, --images-dir DIR
-      Static image directory. Default: ./images
+      Static image directory. Relative paths are resolved from the working
+      directory.
 
   -a, --attribute ATTRIBUTE
       Pass an attribute to asciidoctor-pdf. Repeatable.
@@ -487,25 +619,24 @@ Options:
       --watch
       Rebuild PDFs automatically when watched files change.
 
-      Direct changes to selected .adoc documents rebuild only the
-      affected documents.
+      Direct changes to selected .adoc documents rebuild only the affected
+      documents.
 
       --watch-path PATH
-      Watch an additional file or directory.
-      May be specified multiple times. Requires --watch.
+      Watch an additional file or directory. May be specified multiple times.
+      Requires --watch. Relative paths are resolved from the working directory.
 
-      A change to an additional watch path causes all selected
-      documents to be rebuilt.
+      A change to an additional watch path causes all selected documents to be
+      rebuilt.
 
       --no-image-collection
       Do not collect images in a temporary directory.
 
       --no-theme-discovery
-      Do not automatically use INPUT_ROOT/themes/default-theme.yml
-      as theme file.
+      Do not automatically use WORK_DIR/themes/default-theme.yml as theme file.
 
       --keep-temp
-      Keep the temporary directory.
+      Keep the temporary directory used by the PDF generator.
 
   -h, --help
       Show this help.
@@ -521,17 +652,21 @@ Extension detection:
       Enabled by docgen-use-kroki or any resolved kroki-* attribute.
 
 Watch mode:
-  If INPUT_PATH is a directory, the set of input .adoc files is
-  determined when the command starts.
+  The set of selected .adoc files is determined when the command starts.
+  Input directories themselves are not watched for newly created documents.
 
-  Each input document is watched independently. A change to one input
-  document rebuilds only that document.
+  One watchexec process watches all selected input documents and all explicit
+  --watch-path entries.
 
-  Additional --watch-path files or directories are watched by every
-  input document. Hidden paths and generated PDF files are ignored.
+  A direct change to one or more selected input documents rebuilds only those
+  documents. A change to an additional --watch-path rebuilds every selected
+  document.
 
-  A failed preview build does not stop watching. The last successfully
-  generated PDF remains unchanged.
+  Hidden paths and generated PDF files are ignored.
+
+  Preview builds are independent. A failed document does not prevent other
+  affected documents from being generated, and failed builds do not stop
+  watching.
 _EOI_
 }
 
