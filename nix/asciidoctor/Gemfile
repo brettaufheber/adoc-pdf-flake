@@ -34,5 +34,6 @@ gem "prawn-gmagick", "= 0.0.9"
 # language-aware hyphenation
 gem "text-hyphen", "~> 1.5.0"
 
-# explicit runtime dependency for decimal arithmetic
+# explicit runtime dependencies no longer bundled by Ruby
+gem "base64", "~> 0.3.0"
 gem "bigdecimal", "~> 3.1.8"

@@ -160,6 +160,16 @@
     };
     version = "2.0.6";
   };
+  base64 = {
+    groups = ["default"];
+    platforms = [];
+    source = {
+      remotes = ["https://rubygems.org"];
+      sha256 = "0yx9yn47a8lkfcjmigk79fykxvr80r4m1i35q82sxzynpbm7lcr7";
+      type = "gem";
+    };
+    version = "0.3.0";
+  };
   bibtex-ruby = {
     dependencies = ["latex-decode" "logger" "racc"];
     groups = ["default"];
