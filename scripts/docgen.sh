@@ -3,6 +3,7 @@ set -euo pipefail
 
 function main {
   local OPTS
+  local DEBOUNCE
   local WORK_DIR_OPTION
   local WORK_DIR
   local INPUT_PATH
@@ -12,7 +13,6 @@ function main {
   local ADOC_FILES_RESULT
   local WATCH_PATH
   local RESOLVED_WATCH_PATH
-  local INITIAL_BUILD_FAILED
   local -a INPUT_PATHS
   local -a RESOLVED_INPUT_PATHS
   local -a ADOC_FILES
@@ -22,6 +22,7 @@ function main {
   local -a GENERATOR_ARGS
   local -a WATCH_ARGS
 
+  DEBOUNCE="250ms"
   WORK_DIR_OPTION="."
   INPUT_PATHS=()
   RESOLVED_INPUT_PATHS=()
@@ -52,10 +53,11 @@ function main {
   OPTS="$(
     getopt \
       --name "${APP_NAME}" \
-      --options 'C:f:s:a:h' \
+      --options 'C:d:f:s:a:h' \
       --longoptions "$(
         printf '%s' \
           'directory:,' \
+          'debounce:,' \
           'failure-level:,' \
           'safe-mode:,' \
           'attribute:,' \
@@ -74,6 +76,10 @@ function main {
     case "${1}" in
       -C|--directory)
         WORK_DIR_OPTION="${2}"
+        shift 2
+        ;;
+      -d|--debounce)
+        DEBOUNCE="${2}"
         shift 2
         ;;
       -f|--failure-level)
@@ -197,12 +203,10 @@ function main {
   fi
 
   #
-  # The workspace root is also the wrapper-specific input root used by
-  # docgen-pdf, e.g. for themes/default-theme.yml.
+  # Keep the PDF generator on the same working-directory boundary. This also
+  # provides its root for wrapper-specific discovery such as the default theme.
   #
-  # This does not modify Asciidoctor's base directory.
-  #
-  GENERATOR_ARGS+=(--input-root "${WORK_DIR}")
+  GENERATOR_ARGS+=(-C "${WORK_DIR}")
 
   #
   # Normal generation: let the PDF generator process the selected
@@ -249,27 +253,12 @@ function main {
   done
 
   #
-  # Initial preview build.
+  # Initial preview build. Any generator failure aborts before the watcher
+  # starts so its exit status is not hidden.
   #
-  # Build each document independently so a temporarily invalid document
-  # does not prevent the remaining previews from being generated.
-  #
-  INITIAL_BUILD_FAILED=0
-
-  for ADOC_FILE in "${ADOC_FILES[@]}"; do
-    if ! "${DOCGEN_PDF_GENERATOR}" \
-        "${GENERATOR_ARGS[@]}" \
-        "${ADOC_FILE}"
-    then
-      INITIAL_BUILD_FAILED=1
-    fi
-  done
-
-  if (( INITIAL_BUILD_FAILED )); then
-    printf \
-      'One or more initial preview builds failed; continuing to watch.\n' \
-      >&2
-  fi
+  "${DOCGEN_PDF_GENERATOR}" \
+    "${GENERATOR_ARGS[@]}" \
+    "${ADOC_FILES[@]}"
 
   printf 'Watching %d document(s) below %s. Press Ctrl-C to stop.\n' \
     "${#ADOC_FILES[@]}" \
@@ -309,7 +298,8 @@ function main {
   #
   exec watchexec \
     --postpone \
-    --debounce=250ms \
+    --exit-on-error \
+    --debounce="${DEBOUNCE}" \
     --on-busy-update=queue \
     --ignore-nothing \
     --ignore '**/.*' \
@@ -321,14 +311,14 @@ function main {
     --env DOCGEN_WATCH_DISPATCH=1 \
     -- \
     "${DOCGEN_COMMAND}" \
-    "${#ADOC_FILES[@]}" \
-    "${ADOC_FILES[@]}" \
-    "${#RESOLVED_WATCH_FILES[@]}" \
-    "${RESOLVED_WATCH_FILES[@]}" \
-    "${#RESOLVED_WATCH_DIRS[@]}" \
-    "${RESOLVED_WATCH_DIRS[@]}" \
-    "${#GENERATOR_ARGS[@]}" \
-    "${GENERATOR_ARGS[@]}"
+      "${#ADOC_FILES[@]}" \
+      "${ADOC_FILES[@]}" \
+      "${#RESOLVED_WATCH_FILES[@]}" \
+      "${RESOLVED_WATCH_FILES[@]}" \
+      "${#RESOLVED_WATCH_DIRS[@]}" \
+      "${RESOLVED_WATCH_DIRS[@]}" \
+      "${#GENERATOR_ARGS[@]}" \
+      "${GENERATOR_ARGS[@]}"
 }
 
 function require_below_work_dir {
@@ -379,15 +369,15 @@ function dispatch_watch_events {
   local EVENT_PATHS_RESULT
   local ADOC_FILE
   local WATCH_PATH
-  local BUILD_ALL
-  local BUILD_FAILED
   local -a ADOC_FILES
+  local -a BUILD_ADOC_FILES
   local -a WATCH_FILES
   local -a WATCH_DIRS
   local -a GENERATOR_ARGS
   local -A BUILD_FILES
 
   ADOC_FILES=()
+  BUILD_ADOC_FILES=()
   WATCH_FILES=()
   WATCH_DIRS=()
   GENERATOR_ARGS=()
@@ -488,8 +478,6 @@ function dispatch_watch_events {
     '
   )"
 
-  BUILD_ALL=0
-
   while IFS= read -r EVENT_PATH_BASE64; do
     [[ -n "${EVENT_PATH_BASE64}" ]] || continue
 
@@ -507,12 +495,13 @@ function dispatch_watch_events {
     #
     for WATCH_PATH in "${WATCH_FILES[@]}"; do
       if [[ "${EVENT_PATH}" == "${WATCH_PATH}" ]]; then
-        BUILD_ALL=1
-        break
+        for ADOC_FILE in "${ADOC_FILES[@]}"; do
+          BUILD_FILES["${ADOC_FILE}"]=1
+        done
+
+        continue 2
       fi
     done
-
-    (( BUILD_ALL )) && continue
 
     #
     # The same applies to the directory itself and every path below an
@@ -522,12 +511,13 @@ function dispatch_watch_events {
       if [[ "${EVENT_PATH}" == "${WATCH_PATH}" ||
             "${EVENT_PATH}" == "${WATCH_PATH}/"* ]]
       then
-        BUILD_ALL=1
-        break
+        for ADOC_FILE in "${ADOC_FILES[@]}"; do
+          BUILD_FILES["${ADOC_FILE}"]=1
+        done
+
+        continue 2
       fi
     done
-
-    (( BUILD_ALL )) && continue
 
     #
     # Otherwise, an event for a concrete selected input document only
@@ -541,31 +531,19 @@ function dispatch_watch_events {
     done
   done <<< "${EVENT_PATHS_RESULT}"
 
-  BUILD_FAILED=0
+  # Preserve the original document order when turning the selected set into
+  # arguments for one generator invocation.
+  for ADOC_FILE in "${ADOC_FILES[@]}"; do
+    if [[ -n "${BUILD_FILES["${ADOC_FILE}"]+x}" ]]; then
+      BUILD_ADOC_FILES+=("${ADOC_FILE}")
+    fi
+  done
 
-  if (( BUILD_ALL )); then
-    for ADOC_FILE in "${ADOC_FILES[@]}"; do
-      if ! "${DOCGEN_PDF_GENERATOR}" \
-          "${GENERATOR_ARGS[@]}" \
-          "${ADOC_FILE}"
-      then
-        BUILD_FAILED=1
-      fi
-    done
-  else
-    for ADOC_FILE in "${ADOC_FILES[@]}"; do
-      if [[ -n "${BUILD_FILES["${ADOC_FILE}"]+x}" ]]; then
-        if ! "${DOCGEN_PDF_GENERATOR}" \
-            "${GENERATOR_ARGS[@]}" \
-            "${ADOC_FILE}"
-        then
-          BUILD_FAILED=1
-        fi
-      fi
-    done
+  if ((${#BUILD_ADOC_FILES[@]} > 0)); then
+    "${DOCGEN_PDF_GENERATOR}" \
+      "${GENERATOR_ARGS[@]}" \
+      "${BUILD_ADOC_FILES[@]}"
   fi
-
-  return "${BUILD_FAILED}"
 }
 
 function die {
@@ -592,6 +570,10 @@ Options:
   -C, --directory DIR
       Change to DIR before resolving input paths, watch paths, and other
       relative paths. Default: current working directory.
+
+  -d, --debounce DURATION
+      Wait for changes to settle before rebuilding. Passed to watchexec.
+      Default: 250ms. Examples: 500ms, 2s
 
   -f, --failure-level LEVEL
       Failure level. Default: WARN
@@ -647,9 +629,9 @@ Watch mode:
 
   Hidden paths and generated PDF files are ignored.
 
-  Preview builds are independent. A failed document does not prevent other
-  affected documents from being generated, and failed builds do not stop
-  watching.
+  Document-specific failures from the attribute resolver or asciidoctor-pdf
+  are reported and skipped. Any other failed initial or watched build stops
+  the watcher and is returned as an error by docgen.
 _EOI_
 }
 
