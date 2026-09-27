@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+APP_NAME="${0##*/}"
+SLEF_PATH="$(realpath -- "${BASH_SOURCE[0]}")"
+readonly APP_NAME SLEF_PATH
+
 function main {
   local OPTS
   local DEBOUNCE
@@ -20,6 +24,7 @@ function main {
   local -a RESOLVED_WATCH_FILES
   local -a RESOLVED_WATCH_DIRS
   local -a GENERATOR_ARGS
+  local -a USER_ATTRIBUTES
   local -a WATCH_ARGS
 
   DEBOUNCE="250ms"
@@ -31,16 +36,23 @@ function main {
   RESOLVED_WATCH_FILES=()
   RESOLVED_WATCH_DIRS=()
   GENERATOR_ARGS=()
+  USER_ATTRIBUTES=()
   WATCH_ARGS=()
 
-  APP_NAME="${0##*/}"
+  FAILURE_LEVEL="WARN"
+  SAFE_MODE="unsafe"
+  DISCOVER_THEME=1
+  REMOVE_TEMP_DIR=1
   WATCH_MODE=0
 
-  : "${DOCGEN_COMMAND:?DOCGEN_COMMAND is not set}"
-  : "${DOCGEN_PDF_GENERATOR:?DOCGEN_PDF_GENERATOR is not set}"
+  [[ -x "${SLEF_PATH}" ]] ||
+    die "docgen command is not executable: ${SLEF_PATH}"
 
-  [[ -x "${DOCGEN_PDF_GENERATOR}" ]] ||
-    die "PDF generator is not executable: ${DOCGEN_PDF_GENERATOR}"
+  # Internal mode used at the former docgen/docgen-generate-pdf boundary.
+  if [[ "${DOCGEN_GENERATE:-0}" == 1 ]]; then
+    generate_documents "${@}"
+    return
+  fi
 
   #
   # Internal mode used by watchexec.
@@ -83,15 +95,15 @@ function main {
         shift 2
         ;;
       -f|--failure-level)
-        GENERATOR_ARGS+=(--failure-level "${2}")
+        FAILURE_LEVEL="${2}"
         shift 2
         ;;
       -s|--safe-mode)
-        GENERATOR_ARGS+=(--safe-mode "${2}")
+        SAFE_MODE="${2}"
         shift 2
         ;;
       -a|--attribute)
-        GENERATOR_ARGS+=(--attribute "${2}")
+        USER_ATTRIBUTES+=(-a "${2}")
         shift 2
         ;;
       --watch)
@@ -103,11 +115,11 @@ function main {
         shift 2
         ;;
       --no-theme-discovery)
-        GENERATOR_ARGS+=(--no-theme-discovery)
+        DISCOVER_THEME=0
         shift
         ;;
       --keep-temp)
-        GENERATOR_ARGS+=(--keep-temp)
+        REMOVE_TEMP_DIR=0
         shift
         ;;
       -h|--help)
@@ -203,25 +215,29 @@ function main {
   fi
 
   #
-  # Keep the PDF generator on the same working-directory boundary. This also
-  # provides its root for wrapper-specific discovery such as the default theme.
+  # Serialize the normalized generator configuration for the internal
+  # self-invocation. The element count keeps repeated attributes unambiguous.
   #
-  GENERATOR_ARGS+=(-C "${WORK_DIR}")
+  GENERATOR_ARGS=(
+    "${WORK_DIR}"
+    "${FAILURE_LEVEL}"
+    "${SAFE_MODE}"
+    "${DISCOVER_THEME}"
+    "${REMOVE_TEMP_DIR}"
+    "${#USER_ATTRIBUTES[@]}"
+    "${USER_ATTRIBUTES[@]}"
+  )
 
   #
-  # Normal generation: let the PDF generator process the selected
-  # documents directly.
+  # Preserve the former process boundary by invoking this script in its
+  # internal generator mode.
   #
   if (( ! WATCH_MODE )); then
-    exec "${DOCGEN_PDF_GENERATOR}" \
+    run_pdf_generator \
       "${GENERATOR_ARGS[@]}" \
       "${ADOC_FILES[@]}"
+    return
   fi
-
-  : "${DOCGEN_COMMAND:?DOCGEN_COMMAND is not set}"
-
-  [[ -x "${DOCGEN_COMMAND}" ]] ||
-    die "docgen command is not executable: ${DOCGEN_COMMAND}"
 
   #
   # Validate, resolve, and classify explicitly requested watch paths.
@@ -256,7 +272,7 @@ function main {
   # Initial preview build. Any generator failure aborts before the watcher
   # starts so its exit status is not hidden.
   #
-  "${DOCGEN_PDF_GENERATOR}" \
+  run_pdf_generator \
     "${GENERATOR_ARGS[@]}" \
     "${ADOC_FILES[@]}"
 
@@ -293,7 +309,7 @@ function main {
   # docgen is replaced by watchexec. Bash therefore does not supervise
   # any long-running child processes.
   #
-  # Watchexec starts DOCGEN_COMMAND in internal dispatch mode for each
+  # Watchexec starts this script in internal dispatch mode for each
   # debounced event batch and supplies that batch as JSON on stdin.
   #
   exec watchexec \
@@ -310,7 +326,7 @@ function main {
     "${WATCH_ARGS[@]}" \
     --env DOCGEN_WATCH_DISPATCH=1 \
     -- \
-    "${DOCGEN_COMMAND}" \
+    "${SLEF_PATH}" \
       "${#ADOC_FILES[@]}" \
       "${ADOC_FILES[@]}" \
       "${#RESOLVED_WATCH_FILES[@]}" \
@@ -540,10 +556,328 @@ function dispatch_watch_events {
   done
 
   if ((${#BUILD_ADOC_FILES[@]} > 0)); then
-    "${DOCGEN_PDF_GENERATOR}" \
+    run_pdf_generator \
       "${GENERATOR_ARGS[@]}" \
       "${BUILD_ADOC_FILES[@]}"
   fi
+}
+
+function run_pdf_generator {
+  DOCGEN_GENERATE=1 "${SLEF_PATH}" "${@}"
+}
+
+function generate_documents {
+  local ARG_COUNT
+  local INDEX
+  local INPUT_FILE
+  local RESOLVED_INPUT_FILE
+  local INPUT_DIR
+  local RELATIVE_INPUT_DIR
+  local TEMP_GENERATED_ROOT
+  local TEMP_DOCUMENT_DIR
+  local -a INPUT_FILES
+  local -a REQUESTED_INPUT_FILES
+  local -a USER_ATTRIBUTES
+
+  INPUT_FILES=()
+  USER_ATTRIBUTES=()
+
+  (($# >= 6)) ||
+    die "incomplete internal generator arguments"
+
+  WORK_DIR="${1}"
+  FAILURE_LEVEL="${2}"
+  SAFE_MODE="${3}"
+  DISCOVER_THEME="${4}"
+  REMOVE_TEMP_DIR="${5}"
+  ARG_COUNT="${6}"
+  shift 6
+
+  [[ "${DISCOVER_THEME}" =~ ^[01]$ &&
+     "${REMOVE_TEMP_DIR}" =~ ^[01]$ &&
+     "${ARG_COUNT}" =~ ^[0-9]+$ ]] ||
+    die "invalid internal generator arguments"
+
+  ((ARG_COUNT % 2 == 0)) ||
+    die "invalid internal generator attribute arguments"
+
+  (($# >= ARG_COUNT + 1)) ||
+    die "incomplete internal generator arguments"
+
+  for ((INDEX = 0; INDEX < ARG_COUNT; INDEX += 1)); do
+    USER_ATTRIBUTES+=("${1}")
+    shift
+  done
+
+  REQUESTED_INPUT_FILES=("${@}")
+
+  [[ -d "${WORK_DIR}" ]] ||
+    die "working directory does not exist or is not a directory: ${WORK_DIR}"
+
+  WORK_DIR="$(realpath -- "${WORK_DIR}")"
+  cd -- "${WORK_DIR}"
+
+  : "${DOCGEN_ATTRIBUTE_RESOLVE:?DOCGEN_ATTRIBUTE_RESOLVE is not set}"
+  : "${DOCGEN_FEATURE_CHECK:?DOCGEN_FEATURE_CHECK is not set}"
+  : "${DOCGEN_ASCIIDOCTOR_GEMFILE:?DOCGEN_ASCIIDOCTOR_GEMFILE is not set}"
+  : "${DOCGEN_BUNDLE_COMMAND:?DOCGEN_BUNDLE_COMMAND is not set}"
+  : "${DOCGEN_RUBY_COMMAND:?DOCGEN_RUBY_COMMAND is not set}"
+
+  [[ -r "${DOCGEN_ATTRIBUTE_RESOLVE}" ]] ||
+    die "attribute resolver is not readable: ${DOCGEN_ATTRIBUTE_RESOLVE}"
+
+  [[ -r "${DOCGEN_FEATURE_CHECK}" ]] ||
+    die "feature check is not readable: ${DOCGEN_FEATURE_CHECK}"
+
+  [[ -r "${DOCGEN_ASCIIDOCTOR_GEMFILE}" ]] ||
+    die "Asciidoctor Gemfile is not readable: ${DOCGEN_ASCIIDOCTOR_GEMFILE}"
+
+  command -v "${DOCGEN_BUNDLE_COMMAND}" >/dev/null 2>&1 ||
+    die "bundle command is not executable: ${DOCGEN_BUNDLE_COMMAND}"
+
+  command -v "${DOCGEN_RUBY_COMMAND}" >/dev/null 2>&1 ||
+    die "Ruby command is not executable: ${DOCGEN_RUBY_COMMAND}"
+
+  command -v asciidoctor-pdf >/dev/null 2>&1 ||
+    die "asciidoctor-pdf command is not executable"
+
+  for INPUT_FILE in "${REQUESTED_INPUT_FILES[@]}"; do
+    [[ "${INPUT_FILE}" == *.adoc ]] ||
+      die "input must be an .adoc file: ${INPUT_FILE}"
+
+    if [[ ! -e "${INPUT_FILE}" ]]; then
+      warn_document_access "${INPUT_FILE}"
+      continue
+    fi
+
+    [[ -f "${INPUT_FILE}" ]] ||
+      die "input must be a regular .adoc file: ${INPUT_FILE}"
+
+    if [[ ! -r "${INPUT_FILE}" ]]; then
+      warn_document_access "${INPUT_FILE}"
+      continue
+    fi
+
+    if ! RESOLVED_INPUT_FILE="$(realpath -- "${INPUT_FILE}" 2>/dev/null)"; then
+      warn_document_access "${INPUT_FILE}"
+      continue
+    fi
+
+    INPUT_FILE="${RESOLVED_INPUT_FILE}"
+
+    require_below_work_dir \
+      "${WORK_DIR}" \
+      "${INPUT_FILE}" \
+      "input file"
+
+    INPUT_FILES+=("${INPUT_FILE}")
+  done
+
+  if ((${#INPUT_FILES[@]} == 0)); then
+    return 0
+  fi
+
+  TEMP_DIR="$(mktemp -d -t asciidoctor-assets.XXXXXXXX)"
+  trap cleanup EXIT
+
+  TEMP_GENERATED_ROOT="${TEMP_DIR}/generated"
+  mkdir -p -- "${TEMP_GENERATED_ROOT}"
+
+  for INPUT_FILE in "${INPUT_FILES[@]}"; do
+    INPUT_DIR="$(dirname -- "${INPUT_FILE}")"
+
+    RELATIVE_INPUT_DIR="$(
+      realpath \
+        --relative-to="${WORK_DIR}" \
+        -- "${INPUT_DIR}"
+    )"
+
+    TEMP_DOCUMENT_DIR="${TEMP_GENERATED_ROOT}"
+
+    if [[ "${RELATIVE_INPUT_DIR}" != "." ]]; then
+      TEMP_DOCUMENT_DIR+="/${RELATIVE_INPUT_DIR}"
+    fi
+
+    generate_pdf \
+      "${TEMP_DOCUMENT_DIR}" \
+      "${INPUT_FILE}" \
+      "${USER_ATTRIBUTES[@]}"
+  done
+}
+
+function generate_pdf {
+  local TEMP_GEN_DIR
+  local INPUT_FILE
+  local OUTPUT_FILE
+  local TEMP_OUTPUT_FILE
+  local EXIT_STATUS
+  local DOCUMENT_FAILED
+  local -a ASCIIDOCTOR_ARGS
+
+  TEMP_GEN_DIR="${1}"
+  INPUT_FILE="${2}"
+  OUTPUT_FILE="${INPUT_FILE%.adoc}.pdf"
+  TEMP_OUTPUT_FILE="${TEMP_GEN_DIR}/.docgen-output.pdf"
+  DOCUMENT_FAILED=0
+  ASCIIDOCTOR_ARGS=()
+
+  mkdir -p -- "${TEMP_GEN_DIR}"
+
+  prepare_asciidoctor_args \
+    ASCIIDOCTOR_ARGS \
+    DOCUMENT_FAILED \
+    "${@}"
+
+  (( DOCUMENT_FAILED )) && return 0
+
+  printf 'Generate file: %s\n' "${OUTPUT_FILE}"
+
+  asciidoctor-pdf \
+    "--failure-level=${FAILURE_LEVEL}" \
+    "--safe-mode=${SAFE_MODE}" \
+    "${ASCIIDOCTOR_ARGS[@]}" \
+    -o "${TEMP_OUTPUT_FILE}" \
+    "${INPUT_FILE}" \
+    || {
+      EXIT_STATUS="${?}"
+      warn_document_processing \
+        'asciidoctor-pdf' "${INPUT_FILE}" "${EXIT_STATUS}"
+      rm -f -- "${TEMP_OUTPUT_FILE}"
+      return 0
+    }
+
+  mv -- "${TEMP_OUTPUT_FILE}" "${OUTPUT_FILE}"
+}
+
+function prepare_asciidoctor_args {
+  local -n RESULT_ARGS="${1}"
+  local -n RESULT_FAILED="${2}"
+  local TEMP_GEN_DIR="${3}"
+  local INPUT_FILE="${4}"
+  local ATTRIBUTES_JSON
+  local FEATURES_JSON
+  local EXIT_STATUS
+  local DOCGEN_USE_BIBTEX
+  local DOCGEN_USE_MATHEMATICAL
+  local DOCGEN_USE_KROKI
+  shift 4
+
+  RESULT_ARGS+=(
+    -a "allow-uri-read@"
+    -a "compress@"
+    -a "source-highlighter@=rouge"
+    -a "imagesoutdir@=${TEMP_GEN_DIR}"
+  )
+
+  if [[ -n "${ASCIIDOCTOR_PDF_FONTS_DIR:-}" ]]; then
+    RESULT_ARGS+=(
+      -a "pdf-fontsdir@=${ASCIIDOCTOR_PDF_FONTS_DIR};GEM_FONTS_DIR"
+    )
+  fi
+
+  if (( DISCOVER_THEME )) && [[ -r "${WORK_DIR}/themes/default-theme.yml" ]]; then
+    RESULT_ARGS+=(
+      -a "pdf-theme@=${WORK_DIR}/themes/default-theme.yml"
+    )
+  fi
+
+  ATTRIBUTES_JSON="$(
+    BUNDLE_GEMFILE="${DOCGEN_ASCIIDOCTOR_GEMFILE}" \
+      "${DOCGEN_BUNDLE_COMMAND}" exec \
+        "${DOCGEN_RUBY_COMMAND}" \
+          "${DOCGEN_ATTRIBUTE_RESOLVE}" \
+            --backend 'pdf' \
+            --safe-mode "${SAFE_MODE}" \
+            "${RESULT_ARGS[@]}" \
+            "${@}" \
+            "${INPUT_FILE}"
+  )" || {
+    EXIT_STATUS="${?}"
+    warn_document_processing \
+      'DOCGEN_ATTRIBUTE_RESOLVE' "${INPUT_FILE}" "${EXIT_STATUS}"
+    # ShellCheck cannot trace assignments through a nameref parameter.
+    # shellcheck disable=SC2034
+    RESULT_FAILED=1
+    return 0
+  }
+
+  FEATURES_JSON="$(
+    jq -cf "${DOCGEN_FEATURE_CHECK}" \
+      <<< "${ATTRIBUTES_JSON}"
+  )"
+
+  DOCGEN_USE_BIBTEX="$(
+    jq -r '.bibtex | if . then 1 else 0 end' \
+      <<< "${FEATURES_JSON}"
+  )"
+
+  DOCGEN_USE_MATHEMATICAL="$(
+    jq -r '.mathematical | if . then 1 else 0 end' \
+      <<< "${FEATURES_JSON}"
+  )"
+
+  DOCGEN_USE_KROKI="$(
+    jq -r '.kroki | if . then 1 else 0 end' \
+      <<< "${FEATURES_JSON}"
+  )"
+
+  if (( DOCGEN_USE_BIBTEX )); then
+    RESULT_ARGS+=(
+      -r "asciidoctor-bibtex"
+    )
+  fi
+
+  if (( DOCGEN_USE_MATHEMATICAL )); then
+    RESULT_ARGS+=(
+      -r "asciidoctor-mathematical"
+      -a "mathematical-format@=png"
+      -a "mathematical-ppi@=600"
+    )
+  fi
+
+  if (( DOCGEN_USE_KROKI )); then
+    RESULT_ARGS+=(
+      -r "asciidoctor-kroki"
+      -a "kroki-server-url@=https://kroki.io"
+    )
+  fi
+
+  # Explicit user attributes override all soft wrapper defaults.
+  RESULT_ARGS+=("${@}")
+}
+
+# shellcheck disable=SC2317,SC2329
+# Called indirectly via: trap cleanup EXIT
+function cleanup {
+  local EXIT_STATUS="${?}"
+
+  trap - EXIT
+
+  if [[ -n "${TEMP_DIR:-}" && -d "${TEMP_DIR}" ]]; then
+    if (( REMOVE_TEMP_DIR )); then
+      rm -rf -- "${TEMP_DIR}"
+    else
+      printf 'Keep temporary directory: %s\n' "${TEMP_DIR}" >&2
+    fi
+  fi
+
+  exit "${EXIT_STATUS}"
+}
+
+function warn_document_access {
+  printf \
+    '%s - Warning: cannot access .adoc document; skipping: %s\n' \
+    "${APP_NAME}" "${1}" >&2
+}
+
+function warn_document_processing {
+  local COMMAND_NAME="${1}"
+  local INPUT_FILE="${2}"
+  local EXIT_STATUS="${3}"
+
+  printf \
+    '%s - Warning: %s failed for .adoc document with status %s; skipping: %s\n' \
+    "${APP_NAME}" "${COMMAND_NAME}" "${EXIT_STATUS}" "${INPUT_FILE}" >&2
 }
 
 function die {

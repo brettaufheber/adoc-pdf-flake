@@ -134,8 +134,6 @@
             features.common.env
             // features.tools.env
             // {
-              DOCGEN_COMMAND = "${./scripts/docgen.sh}";
-              DOCGEN_PDF_GENERATOR = "${./scripts/docgen-generate-pdf.sh}";
               DOCGEN_ATTRIBUTE_RESOLVE = "${./scripts/resolve-asciidoctor-attributes.rb}";
               DOCGEN_FEATURE_CHECK = "${./scripts/check-asciidoctor-features.jq}";
               DOCGEN_ASCIIDOCTOR_GEMFILE = "${asciidoctorToolchain.confFiles}/Gemfile";
