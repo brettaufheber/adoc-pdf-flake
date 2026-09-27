@@ -104,9 +104,10 @@ function main {
   fi
 
   if [[ -n "${INPUT_ROOT_OPTION}" ]]; then
-    if [[ -d "${INPUT_ROOT_OPTION}" ]]; then
+    if [[ ! -d "${INPUT_ROOT_OPTION}" ]]; then
       die "input root does not exist or is not a directory: ${INPUT_ROOT_OPTION}"
     fi
+
     INPUT_ROOT_OPTION="$(realpath -- "${INPUT_ROOT_OPTION}")"
   fi
 
