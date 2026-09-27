@@ -42,7 +42,7 @@
             jetbrains-mono
             fira-code
           ]
-          ++ lib.attrValues pkgs.tex-gyre;
+          ++ lib.filter lib.isDerivation (lib.attrValues pkgs.tex-gyre);
 
         /*
         Asciidoctor PDF does not resolve a font family through Fontconfig.
