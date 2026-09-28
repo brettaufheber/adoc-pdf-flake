@@ -142,7 +142,7 @@
               DOCGEN_RUBY_COMMAND = "${asciidoctorToolchain.wrappedRuby}/bin/ruby";
             };
           inheritPath = false;
-          text = projectLib.readShellApplicationBody ./scripts/docgen.sh;
+          text = projectLib.readShellApplicationBody ./scripts/docgen-pdf.sh;
         };
 
         updateGemsApp = pkgs.writeShellApplication {
