@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
+shopt -s inherit_errexit
 
 APP_NAME="${0##*/}"
-SLEF_PATH="$(realpath -- "${BASH_SOURCE[0]}")"
-readonly APP_NAME SLEF_PATH
+SELF_PATH="$(realpath -- "${BASH_SOURCE[0]}")"
+readonly APP_NAME SELF_PATH
+
+# If publishing a generated PDF fails, the EXIT trap removes the incomplete
+# file from the destination directory.
+PUBLISH_TEMP_FILE=""
 
 function main {
   # Internal processes inherit the validated runtime environment and working
@@ -238,7 +243,7 @@ function resolve_input_documents {
     OUTPUT_DOCUMENTS+=("${ADOC_FILE}")
   done <<< "${ADOC_FILES_RESULT}"
 
-  if ((${#ADOC_FILES[@]} == 0)); then
+  if ((${#OUTPUT_DOCUMENTS[@]} == 0)); then
     die "no .adoc files found in selected input paths"
   fi
 }
@@ -298,7 +303,7 @@ function start_watcher {
     "${WORK_DIR}" >&2
 
   # Input directories are intentionally absent. The selected document set
-  # remains fixed until docgen is restarted.
+  # remains fixed until adoc-pdf is restarted.
   for WATCH_PATH in \
     "${DOCUMENTS_REF[@]}" \
     "${WATCH_FILES_REF[@]}" \
@@ -307,7 +312,7 @@ function start_watcher {
     WATCH_ARGS+=(--watch "${WATCH_PATH}")
   done
 
-  # Replace docgen with one watchexec process. Each debounced event batch
+  # Replace adoc-pdf with one watchexec process. Each debounced event batch
   # starts this script in internal dispatch mode and is supplied as JSON.
   exec watchexec \
     --postpone \
@@ -323,7 +328,7 @@ function start_watcher {
     "${WATCH_ARGS[@]}" \
     --env DOCGEN_WATCH_DISPATCH=1 \
     -- \
-    "${SLEF_PATH}" \
+    "${SELF_PATH}" \
       "${#DOCUMENTS_REF[@]}" \
       "${DOCUMENTS_REF[@]}" \
       "${#WATCH_FILES_REF[@]}" \
@@ -342,8 +347,8 @@ function validate_runtime_environment {
   : "${DOCGEN_BUNDLE_COMMAND:?DOCGEN_BUNDLE_COMMAND is not set}"
   : "${DOCGEN_RUBY_COMMAND:?DOCGEN_RUBY_COMMAND is not set}"
 
-  [[ -x "${SLEF_PATH}" ]] ||
-    die "docgen command is not executable: ${SLEF_PATH}"
+  [[ -x "${SELF_PATH}" ]] ||
+    die "adoc-pdf command is not executable: ${SELF_PATH}"
 
   [[ -r "${DOCGEN_ATTRIBUTE_RESOLVE}" ]] ||
     die "attribute resolver is not readable: ${DOCGEN_ATTRIBUTE_RESOLVE}"
@@ -382,6 +387,8 @@ function require_project_path {
   case "${RELATIVE_PATH}" in
     ..|../*)
       die "${PATH_DESCRIPTION} is outside working directory: ${PATH_TO_CHECK}"
+      ;;
+    *)
       ;;
   esac
 
@@ -526,15 +533,14 @@ function dispatch_watch_events {
 }
 
 function run_pdf_generator {
-  DOCGEN_GENERATE=1 "${SLEF_PATH}" "${@}"
+  DOCGEN_GENERATE=1 "${SELF_PATH}" "${@}"
 }
 
 function generate_documents {
   local INPUT_FILE
-  local INPUT_DIR
-  local RELATIVE_INPUT_DIR
-  local TEMP_GENERATED_ROOT
-  local TEMP_DOCUMENT_DIR
+  local RELATIVE_INPUT_FILE
+  local TEMP_IMAGES_DIR
+  local TEMP_OUTPUT_FILE
   local -a INTERNAL_ARGS
   local -a INPUT_FILES=()
   local -a REQUESTED_INPUT_FILES
@@ -583,52 +589,58 @@ function generate_documents {
   TEMP_DIR="$(mktemp -d -t asciidoctor-assets.XXXXXXXX)"
   trap cleanup EXIT
 
-  TEMP_GENERATED_ROOT="${TEMP_DIR}/generated"
-  mkdir -p -- "${TEMP_GENERATED_ROOT}"
-
   for INPUT_FILE in "${INPUT_FILES[@]}"; do
-    INPUT_DIR="$(dirname -- "${INPUT_FILE}")"
-
-    RELATIVE_INPUT_DIR="$(
+    RELATIVE_INPUT_FILE="$(
       realpath \
         --relative-to="${WORK_DIR}" \
-        -- "${INPUT_DIR}"
+        -- "${INPUT_FILE}"
     )"
 
-    TEMP_DOCUMENT_DIR="${TEMP_GENERATED_ROOT}"
-
-    if [[ "${RELATIVE_INPUT_DIR}" != "." ]]; then
-      TEMP_DOCUMENT_DIR+="/${RELATIVE_INPUT_DIR}"
-    fi
+    # Mirror the source tree below dedicated images and pdf roots. Including
+    # the document basename isolates generated assets of sibling documents.
+    TEMP_IMAGES_DIR="${TEMP_DIR}/images/${RELATIVE_INPUT_FILE%.adoc}"
+    TEMP_OUTPUT_FILE="${TEMP_DIR}/pdf/${RELATIVE_INPUT_FILE%.adoc}.pdf"
 
     generate_pdf \
-      "${TEMP_DOCUMENT_DIR}" \
+      "${TEMP_IMAGES_DIR}" \
+      "${TEMP_OUTPUT_FILE}" \
       "${INPUT_FILE}" \
       "${USER_ATTRIBUTES[@]}"
   done
 }
 
 function generate_pdf {
-  local TEMP_GEN_DIR
+  local TEMP_IMAGES_DIR
+  local TEMP_OUTPUT_FILE
   local INPUT_FILE
   local OUTPUT_FILE
-  local TEMP_OUTPUT_FILE
+  local OUTPUT_DIR
+  local OUTPUT_BASENAME
   local EXIT_STATUS
   local DOCUMENT_FAILED
+  local PUBLISH_TEMP_FILE
   local -a ASCIIDOCTOR_ARGS
 
-  TEMP_GEN_DIR="${1}"
-  INPUT_FILE="${2}"
+  TEMP_IMAGES_DIR="${1}"
+  TEMP_OUTPUT_FILE="${2}"
+  INPUT_FILE="${3}"
+  shift 3
+
   OUTPUT_FILE="${INPUT_FILE%.adoc}.pdf"
-  TEMP_OUTPUT_FILE="${TEMP_GEN_DIR}/.docgen-output.pdf"
+  OUTPUT_DIR="$(dirname -- "${OUTPUT_FILE}")"
+  OUTPUT_BASENAME="$(basename -- "${OUTPUT_FILE}")"
   DOCUMENT_FAILED=0
   ASCIIDOCTOR_ARGS=()
 
-  mkdir -p -- "${TEMP_GEN_DIR}"
+  mkdir -p -- \
+    "${TEMP_IMAGES_DIR}" \
+    "$(dirname -- "${TEMP_OUTPUT_FILE}")"
 
   prepare_asciidoctor_args \
     ASCIIDOCTOR_ARGS \
     DOCUMENT_FAILED \
+    "${TEMP_IMAGES_DIR}" \
+    "${INPUT_FILE}" \
     "${@}"
 
   (( DOCUMENT_FAILED )) && return 0
@@ -645,11 +657,19 @@ function generate_pdf {
       EXIT_STATUS="${?}"
       warn_document_processing \
         'asciidoctor-pdf' "${INPUT_FILE}" "${EXIT_STATUS}"
-      rm -f -- "${TEMP_OUTPUT_FILE}"
       return 0
     }
 
-  mv -- "${TEMP_OUTPUT_FILE}" "${OUTPUT_FILE}"
+  # Copy the completed PDF to a unique hidden file beside its destination.
+  # The final rename then stays on one filesystem and is atomic.
+  PUBLISH_TEMP_FILE="$(
+    mktemp \
+      --tmpdir="${OUTPUT_DIR}" \
+      ".${OUTPUT_BASENAME}.XXXXXXXX.tmp"
+  )"
+
+  cp --preserve=mode -- "${TEMP_OUTPUT_FILE}" "${PUBLISH_TEMP_FILE}"
+  mv -- "${PUBLISH_TEMP_FILE}" "${OUTPUT_FILE}"
 }
 
 function prepare_asciidoctor_args {
@@ -772,7 +792,7 @@ function warn_document_processing {
   local EXIT_STATUS="${3}"
 
   printf \
-    '%s - Warning: %s failed for .adoc document with status %s; skipping: %s\n' \
+    '%s - Warning: %s failed with status %s while handling an .adoc document; skipping this document: %s\n' \
     "${APP_NAME}" "${COMMAND_NAME}" "${EXIT_STATUS}" "${INPUT_FILE}" >&2
 }
 
@@ -859,9 +879,10 @@ Watch mode:
 
   Hidden paths and generated PDF files are ignored.
 
-  Document-specific failures from the attribute resolver or asciidoctor-pdf
-  are reported and skipped. Any other failed initial or watched build stops
-  the watcher and is returned as an error by docgen.
+  Failures reported by the attribute resolver or asciidoctor-pdf while handling
+  an individual document are reported, and that document is skipped. Any other
+  failed initial or watched build stops the watcher and is returned as an error
+  by adoc-pdf.
 _EOI_
 }
 
